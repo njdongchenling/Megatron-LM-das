@@ -11,7 +11,6 @@ import torch.nn
 
 from megatron.training import print_rank_0
 from megatron.core.num_microbatches_calculator import get_num_microbatches
-from megatron.training import get_args
 from megatron.core import parallel_state
 
 from hcu_megatron.core.memory.adaptive_recomputing.adaptive_recompute_apply import get_recompute_hook
@@ -21,6 +20,7 @@ from hcu_megatron.core.memory.adaptive_recomputing.adaptive_recompute_apply impo
 from hcu_megatron.core.memory.adaptive_recomputing.adaptive_recompute_solver import get_graph_solver, GraphSolver
 from hcu_megatron.core.memory.adaptive_recomputing.swap_manager import SwapManager, get_tensor_mem_size
 from hcu_megatron.core.tensor_parallel.checkpoint_manager import get_pipeline_checkpoint_manager
+from hcu_megatron.training import get_args
 
 DTYPE_NBYTES_MAP = {"bf16": 2, "fp16": 2, "fp32": 4}
 

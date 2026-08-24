@@ -566,10 +566,11 @@ class HyperConnectionModule(MegatronModule):
         """Periodic amax / doubly-stochastic / scale logging, shared with the
         non-TK HyperConnectionModule via `get_hyperconnection_logging_tracker`.
         """
-        from megatron.training import get_args
         from hcu_megatron.core.transformer.hyper_connection import (
             get_hyperconnection_logging_tracker,
         )
+        from hcu_megatron.training import get_args
+
         if self.is_mtp or not torch.is_grad_enabled():
             return
         if (get_args().curr_iteration + 1) % self.log_amax_per_step != 0:

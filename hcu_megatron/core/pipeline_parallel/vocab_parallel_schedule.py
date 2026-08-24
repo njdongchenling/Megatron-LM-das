@@ -26,7 +26,6 @@ from megatron.core.utils import (
     get_model_type,
     get_model_xattn,
 )
-from megatron.training import get_args
 
 from hcu_megatron.core.pipeline_parallel.schedules import (
     forward_step,
@@ -41,6 +40,7 @@ from hcu_megatron.core.pipeline_parallel.schedule_timers import ScheduleTimers
 from hcu_megatron.core.tensor_parallel.vocab_output_store import VocabOutputStore
 from hcu_megatron.core.tensor_parallel.vocab_input_store import VocabInputStore
 from .utils import get_lm_head_res_reduce_stream, set_lm_head_res_reduce_stream
+from hcu_megatron.training import get_args
 
 
 def forward_backward_pipelining_with_vocab_parallel(

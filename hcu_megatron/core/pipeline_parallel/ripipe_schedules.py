@@ -22,7 +22,6 @@ from megatron.core.pipeline_parallel.utils import (
     is_vp_last_stage,
 )
 from megatron.core.utils import get_model_config
-from megatron.training import get_args
 from megatron.core.pipeline_parallel.schedules import (
     forward_step,
     backward_step,
@@ -42,6 +41,7 @@ from megatron.core.process_groups_config import ProcessGroupCollection
 from megatron.core.transformer.cuda_graphs import create_cudagraphs
 from typing import Optional, Callable, Union, Iterator, List
 from hcu_megatron.core.tensor_parallel.checkpoint_manager import get_pipeline_checkpoint_manager
+from hcu_megatron.training import get_args
 
 
 def forward_backward_ripipe_pipelining(

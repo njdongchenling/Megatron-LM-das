@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 import re
 import torch
-from megatron.training import get_args
+
+from hcu_megatron.training import get_args
 
 
 def get_layer_id(name):

@@ -21,10 +21,9 @@ from megatron.core.transformer.moe.token_dispatcher import (
 from megatron.core.transformer.moe.token_dispatcher import _DeepepManager as MegatronCoreDeepepManager
 from megatron.core.transformer.moe.token_dispatcher import MoEFlexTokenDispatcher as MegatronCoreMoEFlexTokenDispatcher
 from megatron.core.transformer.transformer_config import TransformerConfig
-from megatron.training.global_vars import get_args
 
 from hcu_megatron.core.transformer.moe.fused_a2a import fused_dispatch
-from hcu_megatron.training.arguments import get_adaptor_args
+from hcu_megatron.training import get_args
 
 
 class PrimusTurboDeepEPTokenDispatcher(MoETokenDispatcher):
@@ -335,7 +334,7 @@ class MoEFlexTokenDispatcher(MegatronCoreMoEFlexTokenDispatcher):
             args = get_args()
             # enable sync-free moe to elimiate deepep cpu busy-wait
             num_worst_tokens = 0
-            if get_adaptor_args().sync_free_moe and get_adaptor_args().sync_free_moe_backend == "deepep":
+            if get_args().sync_free_moe and get_args().sync_free_moe_backend == "deepep":
                 if args.sequence_parallel:
                     seq_length = args.seq_length // self.tp_size
                 else:

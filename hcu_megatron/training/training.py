@@ -134,7 +134,6 @@ from megatron.training.activation_logging import (
 from megatron.training.async_utils import maybe_finalize_async_save
 from megatron.training.dgrad_logging import disable_dgrad_logging, enable_dgrad_logging, save_dgrads
 from megatron.training.global_vars import (
-    get_args,
     get_energy_monitor,
     get_one_logger,
     get_signal_handler,
@@ -177,7 +176,7 @@ from megatron.training.utils import (
 )
 from .edgc_utils import Utils, append_time_to_csv, append_data_to_csv, read_data_from_csv
 from ..core.distributed.power_sgd import EFLayoutManager
-from hcu_megatron.training.arguments import get_adaptor_args
+from hcu_megatron.training import get_args
 
 stimer = StragglerDetector()
 
@@ -517,7 +516,7 @@ def get_model(model_provider_func, model_type=ModelType.encoder_or_decoder, wrap
 
     # Build model.
     def build_model():
-        adaptor_args = get_adaptor_args()
+        args = get_args()
         if (
             get_pg_size(pg_collection.pp) > 1
             and args.virtual_pipeline_model_parallel_size is not None
@@ -543,10 +542,10 @@ def get_model(model_provider_func, model_type=ModelType.encoder_or_decoder, wrap
                 this_model.vp_stage = i
                 model.append(this_model)
 
-        elif adaptor_args.schedule_method == "dualpipev":
+        elif args.schedule_method == "dualpipev":
             model = []
-            if adaptor_args.enable_vocab_parallel:
-                adaptor_args.dualpipev_first_chunk = True
+            if args.enable_vocab_parallel:
+                args.dualpipev_first_chunk = True
                 first_model = model_provider_func(
                     pre_process=is_pp_first_stage(pg_collection.pp),
                     post_process=False,
@@ -557,7 +556,7 @@ def get_model(model_provider_func, model_type=ModelType.encoder_or_decoder, wrap
                 )
                 model.append(first_model)
 
-                adaptor_args.dualpipev_first_chunk = False
+                args.dualpipev_first_chunk = False
                 second_model = model_provider_func(
                     pre_process=False,
                     post_process=False,
@@ -602,7 +601,7 @@ def get_model(model_provider_func, model_type=ModelType.encoder_or_decoder, wrap
 
                 return model
 
-            adaptor_args.dualpipev_first_chunk = True
+            args.dualpipev_first_chunk = True
             first_model = model_provider_func(
                 pre_process=is_pp_first_stage(pg_collection.pp),
                 post_process=False,
@@ -613,7 +612,7 @@ def get_model(model_provider_func, model_type=ModelType.encoder_or_decoder, wrap
             first_model.model_type = model_type
             model.append(first_model)
 
-            adaptor_args.dualpipev_first_chunk = False
+            args.dualpipev_first_chunk = False
             second_model = model_provider_func(
                 pre_process=False,
                 post_process=is_pp_first_stage(pg_collection.pp),
@@ -625,7 +624,7 @@ def get_model(model_provider_func, model_type=ModelType.encoder_or_decoder, wrap
             model.append(second_model)
 
         else:
-            if adaptor_args.enable_vocab_parallel:
+            if args.enable_vocab_parallel:
                 pre_process = is_pp_first_stage(pg_collection.pp)
 
                 model = [
