@@ -243,6 +243,12 @@ def validate_args_func_decorator(validate_args_func):
         ORIGIN_ARG_VALUES["cross_entropy_fusion_impl"] = args.cross_entropy_fusion_impl
         args.cross_entropy_fusion_impl = "native"
 
+        if args.cuda_graph_impl == "full_iteration":
+            assert not args.overlap_p2p_comm, (
+                "overlap pipeline parallel communication is not supported with full-iteration cuda graphs. "
+                "If overlap_p2p_comm is True, cuda graph replay will hang"
+            )
+
         args = validate_args_func(args, defaults)
 
         # print env vars

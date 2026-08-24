@@ -7,6 +7,7 @@ import torch
 
 from megatron.core.utils import nvtx_decorator
 from megatron.core.pipeline_parallel.p2p_communication import is_single_shape, _batched_p2p_ops, _p2p_ops
+from megatron.training import get_args
 
 from hcu_megatron.core.tensor_parallel.vocab_input_store import VocabInputStore
 from hcu_megatron.training.arguments import get_adaptor_args
@@ -166,7 +167,7 @@ class P2PCommunicator:
         if config.batch_p2p_comm and config.batch_p2p_sync:
             # To protect against race condition when using batch_isend_irecv().
             # User should assert that we have a modern enough PyTorch to not need this
-            if not get_adaptor_args().enable_vocab_parallel:
+            if not (get_adaptor_args().enable_vocab_parallel or get_args().cuda_graph_impl == "full_iteration"):
                 torch.cuda.synchronize()
 
         return tensor_recv_prev, tensor_recv_next, reqs

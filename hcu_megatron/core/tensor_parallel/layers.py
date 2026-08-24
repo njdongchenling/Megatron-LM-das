@@ -19,6 +19,8 @@ from megatron.core.parallel_state import (
     get_global_memory_buffer,
     get_tensor_model_parallel_group,
     get_tensor_model_parallel_world_size,
+    get_pipeline_model_parallel_rank,
+    get_pipeline_model_parallel_world_size,
 )
 from megatron.core.utils import (
     get_pg_rank,
@@ -45,6 +47,10 @@ from megatron.core.tensor_parallel.layers import (
     _initialize_affine_weight_cpu,
     _initialize_affine_weight_gpu,
     set_tensor_model_parallel_attributes,
+)
+from megatron.core.tensor_parallel.random import (
+    get_cuda_rng_tracker,
+    get_expert_parallel_rng_tracker_name,
 )
 from megatron.core.tensor_parallel import VocabParallelEmbedding as MegatronCoreVocabParallelEmbedding
 from megatron.core.tensor_parallel.utils import VocabUtility
@@ -1452,3 +1458,52 @@ class FluxRowParallelLinear(RowParallelLinear):
             f"{type(self).__name__}(in_features={self.input_size_per_partition}, "
             f"out_features={self.output_size}, bias={use_bias}, TP={tp})"
         )
+
+
+def _initialize_affine_weight_gpu(
+        weight,
+        init_method,
+        partition_dim,
+        stride=1,
+        is_expert=False,
+    ):
+    """Initialize affine weight for model parallel on GPU."""
+
+    set_tensor_model_parallel_attributes(
+        tensor=weight, is_parallel=True, dim=partition_dim, stride=stride
+    )
+
+    adaptor_args = get_adaptor_args()
+    if adaptor_args.enable_vocab_parallel:
+        # Initialize master weight
+        per_partition_size, input_size = weight.size()
+        master_weight = torch.empty(
+            per_partition_size * get_pipeline_model_parallel_world_size(),
+            input_size,
+            device=torch.cuda.current_device(),
+            dtype=torch.float,
+            requires_grad=False
+        )
+
+        if not is_expert:
+            with get_cuda_rng_tracker().fork():
+                init_method(master_weight)
+        else:
+            with get_cuda_rng_tracker().fork(get_expert_parallel_rng_tracker_name()):
+                init_method(master_weight)
+
+        # Split and copy
+        weight_list = torch.split(master_weight, per_partition_size, dim=partition_dim)
+
+        with torch.no_grad():
+            # all tensors must live on the same device
+            weight.data.copy_(weight_list[get_pipeline_model_parallel_rank()])
+
+        return
+
+    if not is_expert:
+        with get_cuda_rng_tracker().fork():
+            init_method(weight)
+    else:
+        with get_cuda_rng_tracker().fork(get_expert_parallel_rng_tracker_name()):
+            init_method(weight)

@@ -7,6 +7,7 @@ from typing import Callable, Optional, Union
 
 import torch
 
+from gpt_builders import gpt_builder
 from megatron.training import get_args
 
 try:
@@ -58,9 +59,12 @@ def model_provider(
         # [ModelOpt]: Use custom builder + spec when modelopt is enabled
         model_builder = modelopt_gpt_hybrid_builder
 
-    return model_builder(
-            args, pre_process, post_process, vp_stage, config=config, pg_collection=pg_collection,
-            split_vocab_embedding=split_vocab_embedding,
-            noop_block=noop_block,
-            include_layer_norm=include_layer_norm,
-        )
+    if model_builder == gpt_builder:
+        return model_builder(
+                args, pre_process, post_process, vp_stage, config=config, pg_collection=pg_collection,
+                split_vocab_embedding=split_vocab_embedding,
+                noop_block=noop_block,
+                include_layer_norm=include_layer_norm,
+            )
+
+    return model_builder(args, pre_process, post_process, vp_stage, config=config, pg_collection=pg_collection,)

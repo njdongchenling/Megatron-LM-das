@@ -24,10 +24,7 @@ from megatron.core.tensor_parallel.layers import (
 from megatron.core.transformer.utils import make_sharded_tensors_for_checkpoint
 from megatron.core.utils import prepare_input_tensors_for_wgrad_compute
 from megatron.core.tensor_parallel.cross_entropy import VocabParallelCrossEntropy, VocabUtility
-from megatron.core.tensor_parallel.layers import (
-    _initialize_affine_weight_cpu,
-    _initialize_affine_weight_gpu,
-)
+from megatron.core.tensor_parallel.layers import _initialize_affine_weight_cpu
 from megatron.core.tensor_parallel.mappings import copy_to_tensor_model_parallel_region
 from megatron.core.utils import divide
 from megatron.core.tensor_parallel.layers import dist_all_gather_func, dist_reduce_scatter_func
@@ -39,6 +36,8 @@ try:
     import fused_weight_gradient_mlp_cuda
 except ImportError:
     _grad_accum_fusion_available = False
+
+from hcu_megatron.core.tensor_parallel.layers import _initialize_affine_weight_gpu
 
 
 def _get_vocab_parallel_rank():
