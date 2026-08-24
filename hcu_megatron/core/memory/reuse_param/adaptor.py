@@ -7,8 +7,6 @@ import types
 from functools import wraps
 import torch
 
-from megatron.training import get_args
-
 from hcu_megatron.optimizer.distrib_optimizer import (
     get_parameter_state_dp_zero,
     load_parameter_state_from_dp_zero,
@@ -19,6 +17,7 @@ from .reuse_distrib_optimizer import (
     fp32_tensor_convert_to_fp16_tensor_dis,
 )
 from .reuse_optimizer import ConvertFp32BF16
+from hcu_megatron.training import get_args
 
 
 @torch.no_grad()

@@ -134,7 +134,6 @@ from megatron.training.activation_logging import (
 from megatron.training.async_utils import maybe_finalize_async_save
 from megatron.training.dgrad_logging import disable_dgrad_logging, enable_dgrad_logging, save_dgrads
 from megatron.training.global_vars import (
-    get_args,
     get_energy_monitor,
     get_one_logger,
     get_signal_handler,
@@ -177,6 +176,7 @@ from megatron.training.utils import (
 )
 from .edgc_utils import Utils, append_time_to_csv, append_data_to_csv, read_data_from_csv
 from ..core.distributed.power_sgd import EFLayoutManager
+from hcu_megatron.training import get_args
 from hcu_megatron.training.arguments import get_adaptor_args
 
 stimer = StragglerDetector()

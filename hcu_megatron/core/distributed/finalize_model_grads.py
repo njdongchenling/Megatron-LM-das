@@ -8,7 +8,6 @@ import torch
 from megatron.core import mpu
 from megatron.core import parallel_state
 from megatron.core.utils import get_model_config
-from megatron.training.global_vars import get_args
 from megatron.core.distributed.finalize_model_grads import (
     _allreduce_conditional_embedding_grads,
     _allreduce_non_tensor_model_parallel_grads,
@@ -21,7 +20,8 @@ from megatron.core.distributed.finalize_model_grads import (
 from megatron.core.pipeline_parallel.utils import get_pp_last_rank
 from megatron.core.process_groups_config import ProcessGroupCollection
 
-from ...training.edgc_utils import Utils
+from hcu_megatron.training import get_args
+from hcu_megatron.training.edgc_utils import Utils
 
 
 def finalize_model_grads(

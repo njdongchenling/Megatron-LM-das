@@ -3,8 +3,6 @@
 # Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 import torch
 
-from megatron.training import get_args
-
 from hcu_megatron.core.quantization_utils import (
     float_to_int8s,
     int8s_to_float,
@@ -17,6 +15,7 @@ from hcu_megatron.features_manager.communication.quantize_comm_feature import (
     QUANT_BIT_DEFAULT_GROUP_SIZE_MAP,
     QUANT_BIT_GROUP_SIZE_CHOICES_MAP,
 )
+from hcu_megatron.training import get_args
 
 DTYPE_NUM_BYTES_MAP = {
     "fp16": 2,

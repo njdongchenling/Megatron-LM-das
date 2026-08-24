@@ -7,9 +7,9 @@ import torch
 
 from megatron.core.utils import nvtx_decorator
 from megatron.core.pipeline_parallel.p2p_communication import is_single_shape, _batched_p2p_ops, _p2p_ops
-from megatron.training import get_args
 
 from hcu_megatron.core.tensor_parallel.vocab_input_store import VocabInputStore
+from hcu_megatron.training import get_args
 from hcu_megatron.training.arguments import get_adaptor_args
 
 # Types

@@ -31,7 +31,6 @@ from megatron.core.pipeline_parallel.utils import (
 from megatron.core.pipeline_parallel.p2p_communication import P2PCommunicator
 from megatron.core.process_groups_config import ProcessGroupCollection
 from megatron.core.transformer.moe.paged_stash import paged_stash_reset
-from megatron.training import get_args
 
 from ..combined_1f1b import combined_forward_backward_step
 from hcu_megatron.core.models.common.language_module.language_module import set_shared_embedding_from_dual_chunk
@@ -39,6 +38,7 @@ from hcu_megatron.core.parallel_state import set_dualpipe_chunk
 from hcu_megatron.core.pipeline_parallel.schedules import forward_step_calc_loss
 from hcu_megatron.core.tensor_parallel.vocab_input_store import VocabInputStore
 from hcu_megatron.core.transformer.enums import DualpipeVChunkType
+from hcu_megatron.training import get_args
 
 
 # Types

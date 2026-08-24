@@ -4,8 +4,9 @@
 
 import torch
 
-from megatron.training import get_args
 from megatron.core.transformer.cuda_graphs import is_graph_capturing
+
+from hcu_megatron.training import get_args
 
 
 class DistributedDataParallel():

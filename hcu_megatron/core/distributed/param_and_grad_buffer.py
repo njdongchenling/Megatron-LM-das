@@ -17,9 +17,9 @@ from megatron.core.distributed.param_and_grad_buffer import (
 )
 from megatron.core.distributed.distributed_data_parallel_config import DistributedDataParallelConfig
 from megatron.core.distributed.param_and_grad_buffer import dist_reduce_scatter_func
-from megatron.training.global_vars import get_args
 from megatron.training import get_timers
 
+from hcu_megatron.training import get_args
 from hcu_megatron.training.arguments import get_adaptor_args
 
 logger = logging.getLogger(__name__)

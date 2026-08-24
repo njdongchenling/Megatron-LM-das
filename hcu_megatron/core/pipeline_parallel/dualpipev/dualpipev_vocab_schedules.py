@@ -7,7 +7,6 @@ from typing import Iterator, List, Union, Optional, Callable
 
 import torch
 
-from megatron.training import get_args
 from megatron.core import parallel_state
 from megatron.core.enums import ModelType
 from megatron.core.utils import (
@@ -48,6 +47,7 @@ from ..utils import get_lm_head_res_reduce_stream, set_lm_head_res_reduce_stream
 from hcu_megatron.core.tensor_parallel.vocab_output_store import VocabOutputStore
 from hcu_megatron.core.tensor_parallel.vocab_input_store import VocabInputStore
 from hcu_megatron.core.transformer.enums import DualpipeVChunkType
+from hcu_megatron.training import get_args
 
 
 # Types

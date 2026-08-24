@@ -21,9 +21,9 @@ from megatron.core.transformer.moe.token_dispatcher import (
 from megatron.core.transformer.moe.token_dispatcher import _DeepepManager as MegatronCoreDeepepManager
 from megatron.core.transformer.moe.token_dispatcher import MoEFlexTokenDispatcher as MegatronCoreMoEFlexTokenDispatcher
 from megatron.core.transformer.transformer_config import TransformerConfig
-from megatron.training.global_vars import get_args
 
 from hcu_megatron.core.transformer.moe.fused_a2a import fused_dispatch
+from hcu_megatron.training import get_args
 from hcu_megatron.training.arguments import get_adaptor_args
 
 

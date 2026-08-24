@@ -10,12 +10,12 @@ import torch
 from datetime import timedelta
 from functools import wraps
 
-from megatron.training import get_args
 from megatron.training import inprocess_restart
 from megatron.core import mpu, tensor_parallel
 from megatron.core.utils import is_torch_min_version
 from megatron.training.utils import print_rank_0, warn_rank_0
 
+from hcu_megatron.training import get_args
 from hcu_megatron.training.arguments import get_adaptor_args
 
 

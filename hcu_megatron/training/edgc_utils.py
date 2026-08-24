@@ -2,11 +2,13 @@
 # SPDX-License-Identifier: Apache-2.0
 import os
 import csv
-from datetime import datetime
-from megatron.training.global_vars import get_args
-from scipy.interpolate import interp1d
-from megatron.core import mpu
 import torch
+
+from datetime import datetime
+from scipy.interpolate import interp1d
+
+from megatron.core import mpu
+from hcu_megatron.training import get_args
 
 
 def read_data_from_csv(file_path, iteration):

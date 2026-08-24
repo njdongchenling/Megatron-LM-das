@@ -23,7 +23,6 @@ from megatron.core.extensions.transformer_engine import (
 from megatron.core.model_parallel_config import ModelParallelConfig
 from megatron.core.process_groups_config import ProcessGroupCollection
 from megatron.core.utils import get_pg_size
-from megatron.training.global_vars import get_args
 
 # QuantizedTensor / QuantizedTensorPair are only used in the FP8/FP4 weight
 # quantization paths (added in PR #735).  Older primus_turbo 0.2.0 builds shipped
@@ -76,6 +75,8 @@ try:
     _HAVE_TRITON = True
 except (ImportError, ModuleNotFoundError):
     _HAVE_TRITON = False
+
+from hcu_megatron.training import get_args
 
 _dummy_wgrads = {}
 

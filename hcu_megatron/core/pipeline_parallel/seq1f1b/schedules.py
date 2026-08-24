@@ -9,7 +9,6 @@ from hcu_megatron.core.pipeline_parallel.seq1f1b.sp_utils import sp_queue, sp_sh
 import torch
 from torch.nn.parallel.distributed import DistributedDataParallel as torchDDP
 from megatron import core
-from megatron.training import get_args
 from megatron.core import parallel_state
 from megatron.core.enums import ModelType
 from megatron.core.transformer.cuda_graphs import create_cudagraphs
@@ -26,7 +25,6 @@ from megatron.core.pipeline_parallel.utils import (
 from megatron.core.process_groups_config import ProcessGroupCollection
 from megatron.core.pipeline_parallel.combined_1f1b import combined_1f1b_schedule_for_interleaved_pipelining
 
-
 from megatron.core.utils import (
     drain_embedding_wgrad_compute,
     get_attr_wrapped_model,
@@ -36,6 +34,8 @@ from megatron.core.utils import (
     nvtx_range_pop,
     nvtx_range_push,
 )
+
+from hcu_megatron.training import get_args
 # Types
 Shape = Union[List[int], torch.Size]
 

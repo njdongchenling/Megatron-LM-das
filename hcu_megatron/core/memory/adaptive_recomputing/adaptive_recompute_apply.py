@@ -3,9 +3,9 @@
 import torch
 from megatron.core import tensor_parallel
 from megatron.training import print_rank_0
-from megatron.training import get_args
 from hcu_megatron.core.memory.adaptive_recomputing.swap_manager import SwapManager
 from hcu_megatron.core.memory.adaptive_recomputing.prefetch import prefetch_register_post_backward_hook, prefetch_register_pre_forward_hook, get_swap_prefetch, get_layer_id
+from hcu_megatron.training import get_args
 
 
 class RecomputeHook:

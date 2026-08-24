@@ -3,12 +3,12 @@
 from functools import wraps
 import torch
 
-from megatron.training import get_args
 from megatron.training import print_rank_0
 from megatron.core import parallel_state
 
 from hcu_megatron.core.memory.adaptive_recomputing.adaptive_recompute import AdaptiveRecompute
 from hcu_megatron.core.memory.swap_attention.swap_attention_apply import AdaptiveRecomputeSwapReg
+from hcu_megatron.training import get_args
 
 
 def setup_model_and_optimizer_wrapper(setup_model_and_optimizer):
