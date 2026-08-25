@@ -128,7 +128,7 @@ def _initialize_distributed(get_embedding_ranks, get_position_embedding_ranks, s
             'rank': args.rank,
             'timeout': timedelta(minutes=args.distributed_timeout_minutes),
         }
-        if os.getenv("LAUNCH_BACKEND", "mpirun") == "mpirun":
+        if os.getenv("MEGATRON_LAUNCH_BACKEND", "torchrun") == "mpirun":
             init_process_group_kwargs.update({'init_method': args.dist_url})
         if args.fake_process_group:
             assert is_torch_min_version(

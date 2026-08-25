@@ -2,7 +2,7 @@
 # Nightly Qwen3-8B entry (runs inside the run-test action, after
 # prepare_workspace has been sourced by the action):
 #   - launches the repo example via mpirun (the example's default backend;
-#     the workflow must NOT set LAUNCH_BACKEND=torchrun for this to apply)
+#     the workflow must NOT set MEGATRON_LAUNCH_BACKEND=torchrun for this to apply)
 #   - sources requirements/env.sh, which provides CUDA_DEVICE_MAX_CONNECTIONS=1
 #     and the NCCL/ROCSHMEM tuning the example expects
 #   - overrides socket ifnames for the container (eth0, not eth2)

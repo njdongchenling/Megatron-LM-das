@@ -10,6 +10,8 @@ do
         checkpoint_path=${para#*=}
     elif [[ $para == --launch_with_binding* ]];then
         launch_with_binding=${para#*=}
+    elif [[ $para == --launch_backend* ]];then
+        launch_backend=${para#*=}
     elif [[ $para == --profiling* ]];then
         profiling=${para#*=}
     fi
@@ -26,7 +28,13 @@ DIST_PORT=${2}
 RANK=$OMPI_COMM_WORLD_RANK
 LOCAL_RANK=$OMPI_COMM_WORLD_LOCAL_RANK
 WORLD_SIZE=$OMPI_COMM_WORLD_SIZE
-CURRENT_DIR=$( cd "$( dirname "$0" )" && pwd )
+export MEGATRON_LAUNCH_BACKEND=${launch_backend:-"mpirun"}
+MASTER_ADDR=${MASTER_ADDR:-loadlhost}
+MASTER_PORT=${MASTER_PORT:-6000}
+NNODES=${NNODES:-1}
+NODE_RANK=${NODE_RANK:-${OMPI_COMM_WORLD_RANK:-${PMI_RANK:-0}}}
+GPUS_PER_NODE=${GPUS_PER_NODE:-8}
+CURRENT_DIR="$( cd "$( dirname "$0" )" && pwd )"
 MEGATRON_PATH=$( dirname $( dirname ${CURRENT_DIR}))
 export GPU_MAX_HW_QUEUES=6
 
@@ -177,15 +185,30 @@ if [ -n "${WANDB_API_KEY}" ]; then
     )
 fi
 
-APP="python3 -u ${MEGATRON_PATH}/pretrain_gpt.py \
-    ${DISTRIBUTED_ARGS[@]} \
-    ${MODEL_ARGS[@]} \
-    ${MOE_ARGS[@]} \
-    ${DATA_ARGS[@]} \
-    ${TRAINING_ARGS[@]} \
-    ${MODEL_PARALLEL_ARGS[@]} \
-    ${LOGGING_ARGS[@]} \
-    "
+if [[ "$MEGATRON_LAUNCH_BACKEND" == "mpirun" ]]; then
+    APP="python3 -u ${MEGATRON_PATH}/pretrain_gpt.py \
+        ${MPI_DISTRIBUTED_ARGS[@]} \
+        ${MODEL_ARGS[@]} \
+        ${MOE_ARGS[@]} \
+        ${DATA_ARGS[@]} \
+        ${TRAINING_ARGS[@]} \
+        ${MODEL_PARALLEL_ARGS[@]} \
+        ${LOGGING_ARGS[@]} \
+        "
+elif [[ "$MEGATRON_LAUNCH_BACKEND" == "torchrun" ]]; then
+    APP="torchrun ${TORCH_DISTRIBUTED_ARGS[@]} \
+        ${MEGATRON_PATH}/pretrain_gpt.py \
+        ${MODEL_ARGS[@]} \
+        ${MOE_ARGS[@]} \
+        ${DATA_ARGS[@]} \
+        ${TRAINING_ARGS[@]} \
+        ${MODEL_PARALLEL_ARGS[@]} \
+        ${LOGGING_ARGS[@]} \
+        "
+else
+    echo "Only mpirun and torchrun are supported as launch methods"
+    exit 1
+fi
 
 if [[ $profiling == "torch" ]]; then
     APP+=" ${TORCH_PROFIE_ARGS[@]}"
@@ -196,4 +219,12 @@ elif [[ $profiling == "hip" ]]; then
 fi
 
 #for hygon cpu
-${launch_with_binding} ${LOCAL_RANK} ${APP}
+if [[ "$MEGATRON_LAUNCH_BACKEND" == "mpirun" ]]; then
+    ${launch_with_binding} ${LOCAL_RANK} ${APP}
+elif [[ "$MEGATRON_LAUNCH_BACKEND" == "torchrun" ]]; then
+    echo ${APP}
+    ${APP}
+else
+    echo "Only mpirun and torchrun are supported as launch methods"
+    exit 1
+fi

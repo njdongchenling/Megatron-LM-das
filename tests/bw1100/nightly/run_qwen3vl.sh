@@ -2,7 +2,7 @@
 # Nightly Qwen3-VL-8B SFT entry (runs inside the run-test action, after
 # prepare_workspace has been sourced by the action):
 #   - launches the repo VL example via torchrun (the example's torchrun
-#     branch; the workflow must NOT set LAUNCH_BACKEND for this to apply)
+#     branch; the workflow must NOT set MEGATRON_LAUNCH_BACKEND for this to apply)
 #   - sources requirements/env.sh, which provides CUDA_DEVICE_MAX_CONNECTIONS=1
 #     and the NCCL/ROCSHMEM tuning the example expects
 #   - overrides socket ifnames for the container (eth0, not eth2)

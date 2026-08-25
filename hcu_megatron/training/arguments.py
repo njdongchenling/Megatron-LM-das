@@ -79,7 +79,7 @@ def parse_args(extra_args_provider=None, ignore_unknown_args=False):
         args._explicit_args = explicit_args
 
     # Args from environment
-    if os.getenv("LAUNCH_BACKEND", "mpirun") == "torchrun":
+    if os.getenv("MEGATRON_LAUNCH_BACKEND", "torchrun") == "torchrun":
         args.rank = int(os.getenv('RANK', '0'))
         args.world_size = int(os.getenv("WORLD_SIZE", '1'))
     else:
