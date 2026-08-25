@@ -1,6 +1,7 @@
 # Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
 # SPDX-License-Identifier: BSD-3-Clause
 # Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+import sys
 from contextlib import nullcontext
 
 import pytest
@@ -13,8 +14,14 @@ from megatron.core.models.gpt.gpt_layer_specs import (
     get_gpt_mtp_block_spec,
 )
 from megatron.core.models.gpt.gpt_model import GPTModel
+from megatron.core.num_microbatches_calculator import destroy_num_microbatches_calculator
 from megatron.core.pipeline_parallel.utils import get_comm_stream, get_comp_stream, set_streams
 from megatron.core.utils import is_te_min_version
+from megatron.training.arguments import parse_args, validate_args
+from megatron.training.global_vars import (
+    destroy_global_vars,
+    set_global_variables,
+)
 from tests.unit_tests.a2a_overlap.utils import (
     DummyState,
     build_data,
@@ -278,6 +285,25 @@ class TestA2AOverlap:
     def teardown_method(self, method):
         Utils.destroy_model_parallel()
 
+    def create_test_args(self, num_layers=1, num_moe_experts=8, micro_batch_size=1):
+        destroy_global_vars()
+        destroy_num_microbatches_calculator()
+
+        sys.argv = ['test_schedule_layer_1f1b.py']
+        args = parse_args()
+        args.num_layers = num_layers
+        args.num_moe_experts = num_moe_experts
+        args.hidden_size = 512
+        args.num_attention_heads = 128
+        args.max_position_embeddings = 512
+        args.micro_batch_size = micro_batch_size
+        args.create_attention_mask_in_dataloader = True
+        args.seq_length = 256
+
+        validate_args(args)
+        set_global_variables(args, False)
+        return args
+
     @pytest.mark.skipif(not is_te_min_version("1.9.0.dev0"), reason="Requires TE >= 1.9.0.dev0")
     @pytest.mark.parametrize("overlap_ep_comm_with_split_attn", [False, True])
     def test_transformer_layer_overlap_dense(self, overlap_ep_comm_with_split_attn):
@@ -285,6 +311,7 @@ class TestA2AOverlap:
         Verifies all-to-all overlap optimization in dense transformer layer produces
         the same results as the reference implementation.
         """
+        self.create_test_args(num_moe_experts=None)
         extra_kwargs = {"moe_token_dispatcher_type": "alltoall"}
         config = get_test_config(num_moe_experts=None, extra_kwargs=extra_kwargs)
         microbatches = 4
@@ -326,6 +353,7 @@ class TestA2AOverlap:
         the same results as the reference implement
         ation.
         """
+        self.create_test_args()
         extra_kwargs = {
             "moe_token_dispatcher_type": "alltoall",
             "moe_shared_expert_intermediate_size": 512,
@@ -380,6 +408,7 @@ class TestA2AOverlap:
         Verifies all-to-all overlap optimization in transformer layer with early attn memory release
         produces the same results as the reference implementation.
         """
+        self.create_test_args()
         extra_kwargs = {
             "moe_token_dispatcher_type": "alltoall",
             "ep_overlap_early_attn_memory_release": True,
@@ -435,6 +464,7 @@ class TestA2AOverlap:
         Verifies all-to-all overlap optimization in transformer layer produces
         the same results as the reference implementation.
         """
+        self.create_test_args()
 
         extra_kwargs = {
             "moe_token_dispatcher_type": dispatcher_type,
@@ -492,6 +522,7 @@ class TestA2AOverlap:
         Verifies all-to-all overlap optimization in MTP layer produces
         the same results as the reference implementation.
         """
+        self.create_test_args()
 
         extra_kwargs = {
             "moe_token_dispatcher_type": dispatcher_type,

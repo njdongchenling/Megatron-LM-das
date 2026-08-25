@@ -211,6 +211,7 @@ def _set_random_seed(
             tensor_parallel.model_parallel_cuda_manual_seed(
                 seed, te_rng_tracker, inference_rng_tracker, use_cudagraphable_rng
             )
+
         args = get_args()
         if args.reproduce:
             assert (args.attention_dropout > 0) is False, f"To utilize the reproduction function, args.attention_dropout = {args.attention_dropout} must be set to 0."
