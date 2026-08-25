@@ -128,7 +128,13 @@ class VocabParallelInput(torch.nn.Module):
                 )
             )
             if config.perform_initialization:
-                _initialize_affine_weight_gpu(self.weight, init_method, partition_dim=0, stride=1)
+                _initialize_affine_weight_gpu(
+                    self.weight,
+                    init_method,
+                    partition_dim=0,
+                    stride=1,
+                    params_dtype=config.params_dtype,
+                )
             else:
                 set_tensor_model_parallel_attributes(
                     tensor=self.weight, is_parallel=True, dim=0, stride=1

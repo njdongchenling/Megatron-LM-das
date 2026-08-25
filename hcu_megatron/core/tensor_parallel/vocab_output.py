@@ -498,6 +498,7 @@ class VocabParallelOutput(torch.nn.Module):
                         partition_dim=0,
                         stride=1,
                         is_expert=False,
+                        params_dtype=config.params_dtype,
                     )
 
             setattr(self.weight, 'allreduce', True)

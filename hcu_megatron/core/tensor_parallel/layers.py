@@ -1466,6 +1466,7 @@ def _initialize_affine_weight_gpu(
         partition_dim,
         stride=1,
         is_expert=False,
+        params_dtype=torch.float32,
     ):
     """Initialize affine weight for model parallel on GPU."""
 
@@ -1481,7 +1482,7 @@ def _initialize_affine_weight_gpu(
             per_partition_size * get_pipeline_model_parallel_world_size(),
             input_size,
             device=torch.cuda.current_device(),
-            dtype=torch.float,
+            dtype=params_dtype,
             requires_grad=False
         )
 
