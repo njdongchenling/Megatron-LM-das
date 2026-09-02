@@ -9,6 +9,7 @@ from typing import Union
 from functools import wraps
 
 from megatron.core.msc_utils import MultiStorageClientFeature
+from megatron.core.transformer.moe.fused_a2a import HAVE_DEEP_EP
 from megatron.training import get_args as megatron_get_args
 from megatron.training.arguments import add_megatron_arguments, parse_and_validate_args
 from megatron.training.utils import warn_rank_0
@@ -250,6 +251,20 @@ def validate_args_func_decorator(validate_args_func):
                 "overlap pipeline parallel communication is not supported with full-iteration cuda graphs. "
                 "If overlap_p2p_comm is True, cuda graph replay will hang"
             )
+
+        if args.sync_free_moe_backend == "deepep":
+            args.moe_flex_dispatcher_backend == "deepep"
+            if args.moe_token_dispatcher_type != "flex":
+                warn_rank_0(f"DeepEP backend is only supported with flex token dispatcher.")
+                args.moe_token_dispatcher_type = "flex"
+            assert args.use_primus_grouped_gemm, "--use-primus-grouped-gemm should be set when enabling sync free moe with deepep."
+            assert not args.use_primus_deepep, "--use-primus-deepep should NOT be set when enabling sync free moe with deepep."
+
+        if args.use_primus_deepep:
+            assert HAVE_DEEP_EP, "DeepEP is not available"
+            if args.moe_token_dispatcher_type != "flex":
+                warn_rank_0(f"Primus DeepEP backend is only supported with flex token dispatcher.")
+                args.moe_token_dispatcher_type = "flex"
 
         args = validate_args_func(args, defaults)
 

@@ -167,7 +167,7 @@ def compare_captures(capture_ref, capture_a2a_overlap, verbose=False, skip_embed
             msg = f"gradient name mismatch, '{name}' not in capture_a2a_overlap.keys()"
             return False, msg
         if type(value) != type(capture_a2a_overlap[name]):
-            msg = f"value type mismatch"
+            msg = f"value type mismatch. ref type: {type(value)}. a2a_overlap type: {type(capture_a2a_overlap[name])}"
             return False, msg
         if value is None:
             continue
