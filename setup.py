@@ -49,6 +49,11 @@ setuptools.setup(
     packages=setuptools.find_namespace_packages(include=["hcu_megatron", "hcu_megatron.*"]),
     # Add in any packaged data.
     include_package_data=True,
+    package_data={
+        "hcu_megatron.core.fusions.linear_cross_entropy": [
+            "README.md",
+        ],
+    },
     install_package_data=True,
     zip_safe=False,
     # PyPI package information.
