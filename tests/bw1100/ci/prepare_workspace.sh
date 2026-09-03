@@ -28,7 +28,7 @@ prepare_das_workspace() {
     # nested 3rdparty/Megatron-LM submodule whose gitlink cannot be resolved,
     # and repo code does not use Bridge. Switch to --recursive only if needed.
     git -C "${repo_root}" submodule sync
-    git -C "${repo_root}" submodule update --init
+    git -C "${repo_root}" -c http.version=HTTP/1.1 submodule update --init
 
     # Pinned submodule verification (gitlink + checkout), guards against drift.
     python3 "${script_dir}/verify_submodules.py" --repo-root "${repo_root}"
