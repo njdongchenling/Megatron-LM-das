@@ -41,11 +41,39 @@ RUN TORCH_VERSION=2.10.0 \
     && das-install apex ${TORCH_TAG} \
     && das-install deepspeed ${TORCH_TAG} \
     && das-install transformer-engine ${TORCH_TAG} \
+    && das-install deep-ep ${TORCH_TAG} \
     && pip cache purge \
     && rm -f /usr/local/bin/das-install
 
 # Megatron-LM-das 源码 (构建上下文即仓库根目录, 3rdparty 子模块由 CI checkout)
 ENV PYTHONPATH=/workspace/Megatron-LM
 COPY . /workspace/Megatron-LM
+
+# rccl-tests (带 MPI 编译, 供 multi/rccltest/test_rccl.sh 做单机/多机通信单测)
+# 注意:
+#   1. 不能用 rocminfo 探测 gfx 架构 —— 构建期无 GPU 设备, rocminfo 会因缺
+#      libhsa-runtime64.so.1 直接退出 127。这里改为显式列出 GPU_TARGETS。
+#   2. 基础镜像里 /opt/dtk/lib/libhsa-runtime64.so 是指向 /opt/hyhal 的悬空软链
+#      (/opt/hyhal 是宿主机驱动目录, 只在 run 时挂载)，链接期找不到该库。
+#      因此先造一个同名 SONAME 的空 stub 供链接, 运行时由真实的 /opt/hyhal 提供。
+ARG RCCL_TEST
+ARG RCCL_TESTS_COMMIT=155f4748e6de7ce3ab54a0bf09931d9316262260
+ARG RCCL_GPU_TARGETS="gfx936 gfx938"
+RUN : "${RCCL_TEST:?RCCL_TEST build argument is required}" && \
+    mkdir -p /tmp/hsastub && cd /tmp/hsastub && : > empty.c && \
+    gcc -shared -fPIC -Wl,-soname,libhsa-runtime64.so.1 -o libhsa-runtime64.so.1 empty.c && \
+    ln -sf libhsa-runtime64.so.1 libhsa-runtime64.so && \
+    git clone "${RCCL_TEST}" /opt/rccl-test && \
+    cd /opt/rccl-test && git checkout ${RCCL_TESTS_COMMIT} && \
+    LIBRARY_PATH=/tmp/hsastub:${LIBRARY_PATH} \
+    make HIP_HOME=/opt/dtk \
+         NCCL_HOME=/opt/dtk/rccl \
+         CUSTOM_RCCL_LIB=/opt/dtk/rccl/lib/librccl.so \
+         MPI_HOME=/opt/mpi \
+         CFLAGS=-I/opt/mpi/include \
+         MPI=1 \
+         GPU_TARGETS="${RCCL_GPU_TARGETS}" \
+         -j $(nproc) && \
+    rm -rf /tmp/hsastub /opt/rccl-test/build/*.o /opt/rccl-test/.git
 
 RUN rm -rf ~/.pip/pip.conf

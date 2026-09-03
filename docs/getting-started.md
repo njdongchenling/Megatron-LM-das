@@ -14,7 +14,7 @@
 
 1. 拉取镜像
 
-    `docker pull images:tgs`
+    `docker pull 10.16.1.152:5000/jenkins/model_test_env/megatron:0.18.2-latest`
     
     python3.10需要用 `from typing_extensions import override` 替换掉 `from typing import override`
 
@@ -36,7 +36,7 @@
         -v /opt/hyhal:/opt/hyhal:ro \
         -v /root/.ssh:/root/.ssh:ro \
         -v /path/to/workspace:/path/to/workspace \
-        images:tgs \
+        10.16.1.152:5000/jenkins/model_test_env/megatron:0.18.2-latest \
         /bin/bash
     ```
 3. 拉取Megatron-LM-das源码
@@ -203,7 +203,7 @@
 
 1. 拉取镜像
 
-    `docker pull images:tgs`
+    `docker pull 10.16.1.152:5000/jenkins/model_test_env/megatron:0.18.2-latest`
 
 2. 启动容器
     ```bash
@@ -223,7 +223,7 @@
         -v /opt/hyhal:/opt/hyhal:ro \
         -v /root/.ssh:/root/.ssh:ro \
         -v /path/to/workspace:/path/to/workspace \
-        images:tgs \
+        10.16.1.152:5000/jenkins/model_test_env/megatron:0.18.2-latest \
         /bin/bash
     ```
 3. 拉取Megatron-LM-das源码
