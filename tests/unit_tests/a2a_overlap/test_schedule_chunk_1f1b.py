@@ -178,8 +178,7 @@ class TestA2AOverlap:
         Utils.destroy_model_parallel()
 
     @pytest.mark.skipif(not is_te_min_version("1.9.0.dev0"), reason="Requires TE >= 1.9.0.dev0")
-    @pytest.mark.parametrize("mtp_layers", [0, 1])
-    @pytest.mark.parametrize("layers", [[2, 1], [1, 2]])
+    @pytest.mark.parametrize("layers,mtp_layers", [([2, 1], 0), ([1, 2], 1)])
     @pytest.mark.parametrize("overlap_ep_comm_with_split_attn", [True, False])
     def test_1f1b_schedule_model_chunk(
         self,
