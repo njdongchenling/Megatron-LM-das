@@ -63,11 +63,11 @@ def create_test_args(
     args = parse_args()
     args.num_layers = 2
     args.hidden_size = 128
-    args.num_attention_heads = 8
+    args.num_attention_heads = 16
     args.max_position_embeddings = 512
     args.micro_batch_size = 1
     args.create_attention_mask_in_dataloader = True
-    args.seq_length = 256
+    args.seq_length = 32
 
     args.overlap_ep_comm_with_split_attn = overlap_ep_comm_with_split_attn
     args.integrate_recompute_to_ep_comm_overlap = integrate_recompute_to_ep_comm_overlap

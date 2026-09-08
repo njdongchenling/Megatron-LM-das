@@ -140,7 +140,7 @@ def transformer_config_post_init_wrapper(post_init_func):
             for layer_id in recompute_mtp_layer_ids:
                 assert (
                     layer_id >= 0 and layer_id < self.mtp_num_layers
-                ), f"recompute layer id must be between 0 and {args.mtp_num_layers - 1}"
+                ), f"recompute layer id must be between 0 and {self.mtp_num_layers - 1}"
 
         if (
             args.recompute_layer_ids is not None
@@ -244,8 +244,8 @@ def transformer_config_post_init_wrapper(post_init_func):
                     )
 
         if (
-            args.recompute_layer_ids is not None
-            or args.recompute_mtp_layer_ids is not None
+            self.recompute_layer_ids is not None
+            or self.recompute_mtp_layer_ids is not None
         ):
             self.recompute_granularity = "full"
 
