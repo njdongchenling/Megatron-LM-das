@@ -43,7 +43,7 @@ class DummyNode:
         return x
 
 
-def build_data(seq_len=1024):
+def build_data(seq_len=256):
     """
     Creates a random tensor for testing purposes.
 
@@ -51,7 +51,7 @@ def build_data(seq_len=1024):
         torch.Tensor: A random tensor of shape (1024, 1, 1024) with bfloat16 dtype
                      and requires_grad set to True.
     """
-    hidden_states = torch.randn(*(seq_len, 1, 512), dtype=torch.bfloat16, device="cuda") * 100
+    hidden_states = torch.randn(*(seq_len, 1, 128), dtype=torch.bfloat16, device="cuda") * 100
     hidden_states.requires_grad = True
 
     return hidden_states
