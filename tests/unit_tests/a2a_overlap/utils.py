@@ -208,7 +208,7 @@ def get_test_config(num_layers=1, num_moe_experts=8, extra_kwargs={}, moe_groupe
         num_layers=num_layers,
         hidden_size=128,
         add_bias_linear=False,
-        num_attention_heads=16,
+        num_attention_heads=64,
         ffn_hidden_size=512,
         kv_channels=128,
         hidden_dropout=0.0,

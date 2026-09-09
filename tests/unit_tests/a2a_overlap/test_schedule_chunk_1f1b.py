@@ -63,7 +63,7 @@ def create_test_args(
     args = parse_args()
     args.num_layers = 2
     args.hidden_size = 128
-    args.num_attention_heads = 16
+    args.num_attention_heads = 64
     args.max_position_embeddings = 512
     args.micro_batch_size = 1
     args.create_attention_mask_in_dataloader = True
