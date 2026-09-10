@@ -32,7 +32,7 @@ from tests.unit_tests.test_utilities import Utils
 
 from hcu_megatron.core.models.common.model_chunk_schedule_plan import TransformerModelChunkSchedulePlan
 from hcu_megatron.megatron_adaptor import repatch
-from hcu_megatron.training.arguments import get_adaptor_args
+from hcu_megatron.training.arguments import destroy_adaptor_args, get_adaptor_args
 
 
 def create_test_adaptor_args(
@@ -157,6 +157,8 @@ def test_get_transformer_layer_schedule_plan(mocker):
     )
     assert get_transformer_layer_schedule_plan() == TransformerLayerSchedulePlanWithSplitAttnRecompute
 
+    destroy_adaptor_args()
+
 
 class TestA2AOverlap:
     """
@@ -175,6 +177,7 @@ class TestA2AOverlap:
         set_streams()
 
     def teardown_method(self, method):
+        destroy_adaptor_args()
         Utils.destroy_model_parallel()
 
     @pytest.mark.skipif(not is_te_min_version("1.9.0.dev0"), reason="Requires TE >= 1.9.0.dev0")
