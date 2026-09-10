@@ -263,7 +263,7 @@ def validate_args_func_decorator(validate_args_func):
             )
 
         if args.sync_free_moe_backend == "deepep":
-            args.moe_flex_dispatcher_backend == "deepep"
+            args.moe_flex_dispatcher_backend = "deepep"
             if args.moe_token_dispatcher_type != "flex":
                 warn_rank_0(f"DeepEP backend is only supported with flex token dispatcher.")
                 args.moe_token_dispatcher_type = "flex"
