@@ -6,10 +6,7 @@ import warnings
 from functools import wraps
 from dataclasses import field, make_dataclass, MISSING
 
-from hcu_megatron.training.arguments import (
-    add_adaptor_args,
-    get_adaptor_args,
-)
+from hcu_megatron.training.arguments import add_adaptor_args
 
 
 # 动态生成的 config 子类缓存, 以其基类为 key。
@@ -308,9 +305,13 @@ def transformer_config_init_wrapper(init_func, extra_field_specs):
 
 # Skip existing TransformerConfig fields to avoid conflicts
 from megatron.core.transformer.transformer_config import TransformerConfig as MegatronCoreTransformerConfig
+from megatron.core.transformer.transformer_config import MLATransformerConfig as MegatronCoreMLATransformerConfig
 
 existing_attrs = {f.name for f in MegatronCoreTransformerConfig.__dataclass_fields__.values()}
 extra_field_specs = field_specs_from_parser(skip=existing_attrs)
 transformer_config_init_func = transformer_config_init_wrapper(
-  MegatronCoreTransformerConfig.__init__, extra_field_specs
+    MegatronCoreTransformerConfig.__init__, extra_field_specs
+)
+mla_transformer_config_init_func = transformer_config_init_wrapper(
+    MegatronCoreMLATransformerConfig.__init__, extra_field_specs
 )

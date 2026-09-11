@@ -1,5 +1,5 @@
 # This code was adopted from https://gitcode.com/Ascend/MindSpeed
-from megatron.training import get_args, set_args
+from megatron.training.global_vars import get_args, set_args
 from megatron.training.arguments import parse_and_validate_args
 
 from .features_manager import ADAPTOR_FEATURES
