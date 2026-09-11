@@ -94,7 +94,7 @@ class MegatronBasicFeature(AbstractFeature):
                                     create_dummy=True)
 
     def register_core_transformers_patches(self, patch_manager, args):
-        from hcu_megatron.core.transformer.transformer_config import transformer_config_post_init_wrapper
+        from hcu_megatron.core.transformer.transformer_config import transformer_config_post_init_wrapper, transformer_config_init_func
         from hcu_megatron.core.transformer.moe.moe_layer import moe_layer_init_wrapper, moe_layer_forward_wrapper
         from hcu_megatron.core.transformer.attention import attention_init_wrapper
         from hcu_megatron.core.transformer.moe.experts import TEGroupedMLP
@@ -102,6 +102,8 @@ class MegatronBasicFeature(AbstractFeature):
         # Transformer config, add new params
         patch_manager.register_patch('megatron.core.transformer.transformer_config.TransformerConfig.__post_init__',
                                     transformer_config_post_init_wrapper)
+        patch_manager.register_patch('megatron.core.transformer.transformer_config.TransformerConfig.__init__',
+                                    transformer_config_init_func)
         # support experts_recompute
         patch_manager.register_patch('megatron.core.transformer.moe.moe_layer.MoELayer.__init__',
                                     moe_layer_init_wrapper)
