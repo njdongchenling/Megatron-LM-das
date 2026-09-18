@@ -172,9 +172,8 @@ class TestA2AOverlap:
     This class contains tests to verify that the all-to-all overlap optimization
     produces the same results as the reference implementation.
     """
-
-    def setup_method(self, method):
-        set_adaptor_args(parse_adaptor_args())
+    @staticmethod
+    def _initialize():
         Utils.initialize_model_parallel(
             tensor_model_parallel_size=1,
             pipeline_model_parallel_size=1,
@@ -206,6 +205,7 @@ class TestA2AOverlap:
             overlap_ep_comm_with_split_attn=overlap_ep_comm_with_split_attn,
         )
         repatch(vars(adaptor_args), vars(megatron_args))
+        TestA2AOverlap._initialize()
 
         microbatches = 1
 
@@ -312,6 +312,7 @@ class TestA2AOverlap:
             overlap_ep_comm_with_split_attn=overlap_ep_comm_with_split_attn,
         )
         repatch(vars(adaptor_args), vars(megatron_args))
+        TestA2AOverlap._initialize()
 
         # Re-initialize model parallel with the specified configuration
         Utils.destroy_model_parallel()
@@ -432,6 +433,7 @@ class TestA2AOverlap:
             schedule_method="dualpipev",
         )
         repatch(vars(adaptor_args), vars(megatron_args))
+        TestA2AOverlap._initialize()
 
         # Re-initialize model parallel with the specified configuration
         Utils.destroy_model_parallel()
@@ -570,6 +572,7 @@ class TestA2AOverlap:
             ep_overlap_early_recompute=ep_overlap_early_recompute,
         )
         repatch(vars(adaptor_args), vars(megatron_args))
+        TestA2AOverlap._initialize()
 
         microbatches = 1
 
