@@ -239,6 +239,7 @@ def field_specs_from_parser(skip: set = None):
     parser = argparse.ArgumentParser(description='Adaptor Arguments', allow_abbrev=False)
     parser = add_adaptor_args(parser)
 
+    skip = skip or set()
     specs = {}
     for action in parser._actions:
         if isinstance(action, argparse._HelpAction):
