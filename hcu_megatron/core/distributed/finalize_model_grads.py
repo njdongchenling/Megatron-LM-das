@@ -11,11 +11,13 @@ from megatron.core.utils import get_model_config
 from megatron.core.distributed.finalize_model_grads import (
     _allreduce_conditional_embedding_grads,
     _allreduce_non_tensor_model_parallel_grads,
+    _allreduce_replicated_grads_over_gtp_remat_group,
     _allreduce_word_embedding_grads,
     _allreduce_position_embedding_grads,
     _allreduce_router_grads,
     reset_model_temporary_tensors,
-    _update_router_expert_bias
+    _update_router_expert_bias,
+    _update_router_qb_beta,
 )
 from megatron.core.pipeline_parallel.utils import get_pp_last_rank
 from megatron.core.process_groups_config import ProcessGroupCollection
@@ -66,13 +68,23 @@ def finalize_model_grads(
         pp_group = pg_collection.pp
         embd_group = pg_collection.embd
         pos_emb_group = pg_collection.pos_embd
-        dp_cp_group = pg_collection.dp_cp
+        # Full DP x CP x gtp_remat group: num_tokens (the per-token-loss divisor below) counts the
+        # gtp_remat peers' distinct tokens. Falls back to replicate dp_cp when gtp is inactive.
+        dp_cp_group = getattr(pg_collection, 'dp_cp_gtp_remat', None) or pg_collection.dp_cp
     else:
         tp_group = parallel_state.get_tensor_model_parallel_group()
         pp_group = parallel_state.get_pipeline_model_parallel_group()
         embd_group = parallel_state.get_embedding_group(check_initialized=False)
         pos_emb_group = parallel_state.get_position_embedding_group(check_initialized=False)
         dp_cp_group = parallel_state.get_data_parallel_group(with_context_parallel=True)
+
+    # Fence the current stream against all GTP backward grad work before the DP gradient sync.
+    if config.gtp_weight_remat_size > 1 or config.expert_gtp_weight_remat_size > 1:
+        from megatron.core.tensor_parallel.gtp_api import (
+            wait_for_gtp_grad_reduction_on_current_stream,
+        )
+
+        wait_for_gtp_grad_reduction_on_current_stream()
 
     # All-reduce / reduce-scatter across DP replicas.
     if config.timers is not None:
@@ -204,6 +216,9 @@ def finalize_model_grads(
             barrier=config.barrier_with_L1_time
         )
     _allreduce_non_tensor_model_parallel_grads(model, config, tp_group)
+    _allreduce_replicated_grads_over_gtp_remat_group(
+        model, calculate_per_token_loss=config.calculate_per_token_loss
+    )
     if config.timers is not None:
         config.timers('non-tensor-parallel-grads-all-reduce').stop()
 
@@ -224,6 +239,9 @@ def finalize_model_grads(
                 with_context_parallel=True
             )
         _update_router_expert_bias(model, config, tp_dp_cp_group=tp_dp_cp_group)
+
+    if config.moe_router_load_balancing_type == "quantile_balancing":
+        _update_router_qb_beta(model, config, dp_cp_group=dp_cp_group)
 
     reset_model_temporary_tensors(config, model)
 

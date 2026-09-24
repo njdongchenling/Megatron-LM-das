@@ -24,18 +24,23 @@ class DistributedDataParallel():
 
             if param in self.param_to_bucket_group:
                 assert param.requires_grad
-                if self.ddp_config.overlap_grad_reduce:
-                    # param.grad can temporarily be None in the following cases:
-                    # (1) using dualpipev/ZB_H1 schedule.
-                    # (2) using ripipe schedule.
-                    is_ripipe = getattr(args, 'recompute_in_advance', False) or getattr(args, 'recompute_in_bubble', False)
-                    if (
-                        not (args.gradient_accumulation_fusion and args.delay_wgrad_compute)
-                        and not is_ripipe
-                    ):
-                        assert (
-                            param.grad is not None
-                        ), 'param.grad being None is not safe when overlap_grad_reduce is True'
+                cudagraph_wgrad_ready_event = getattr(param, '_cudagraph_wgrad_ready_event', None)
+                if self.ddp_config.overlap_grad_reduce and cudagraph_wgrad_ready_event is None:
+                    # GTP_remat keeps its real wgrad in main_grad (via finalize); param.grad here is
+                    # throwaway (None or a dummy), so skip this assert and rely on
+                    # grad_added_to_main_grad below.
+                    if not getattr(param, 'is_gtp_weight_remat', False):
+                        # param.grad can temporarily be None in the following cases:
+                        # (1) using dualpipev/ZB_H1 schedule.
+                        # (2) using ripipe schedule.
+                        is_ripipe = getattr(args, 'recompute_in_advance', False) or getattr(args, 'recompute_in_bubble', False)
+                        if (
+                            not (args.gradient_accumulation_fusion and args.delay_wgrad_compute)
+                            and not is_ripipe
+                        ):
+                            assert (
+                                param.grad is not None
+                            ), 'param.grad being None is not safe when overlap_grad_reduce is True'
 
                 if param.grad is not None and (
                     not param.grad_added_to_main_grad or getattr(param, 'zero_out_wgrad', False)

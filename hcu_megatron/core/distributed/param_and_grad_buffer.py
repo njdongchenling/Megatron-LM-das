@@ -120,6 +120,18 @@ class _ParamAndGradBucketGroup:
             self.grad_reduce_handle is None
         ), "Should not have multiple communication calls outstanding at once"
 
+        # Local CUDA graph replay is asynchronous with respect to the outer
+        # autograd hooks. Wait before reading, scaling, or reducing gradients
+        # accumulated by a replay into this bucket.
+        current_stream = torch.cuda.current_stream()
+        waited_event_ids = set()
+        for bucket in self.buckets:
+            for param in bucket.params_list:
+                event = getattr(param, "_cudagraph_wgrad_ready_event", None)
+                if event is not None and id(event) not in waited_event_ids:
+                    current_stream.wait_event(event)
+                    waited_event_ids.add(id(event))
+
         # Copy accumulated .main_grad into communication buffer before collective if
         # .main_grad is not in .grad_data already (e.g., because we want to do local
         # gradient accumulation in a higher precision).
@@ -136,9 +148,11 @@ class _ParamAndGradBucketGroup:
 
         # gradient_scaling_factor already takes into account whether we are computing
         # an average or sum in the data-parallel collective.
-        for bucket in self.buckets:
-            if bucket.gradient_scaling_factor != 1.0:
-                bucket.grad_data *= bucket.gradient_scaling_factor
+        # This mutates gradient communication state and must not be tracked by autograd.
+        with torch.no_grad():
+            for bucket in self.buckets:
+                if bucket.gradient_scaling_factor != 1.0:
+                    bucket.grad_data *= bucket.gradient_scaling_factor
 
         # Decide reduce_op.
         reduce_op = torch.distributed.ReduceOp.SUM
@@ -267,7 +281,12 @@ class _ParamAndGradBucketGroup:
                     )
 
         if async_op:
-            if self.ddp_config.reduce_scatter_with_fp32_accumulation and not force_all_reduce:
+            # fp32-accum RS needs the distributed optimizer; else fall through (all-reduce -> cm).
+            if (
+                self.ddp_config.reduce_scatter_with_fp32_accumulation
+                and self.ddp_config.use_distributed_optimizer
+                and not force_all_reduce
+            ):
                 assert (
                     len(self.buckets) == 1
                 ), "Only 1 bucket supported with reduce_scatter_with_fp32_accumulation=True"

@@ -116,12 +116,18 @@ def gpt_model_postprocess(
         return hidden_states
 
     if self.config.mtp_num_layers:
-        assert self.config.mtp_num_layers > 0
-        if in_inference_mode or is_spec_decode:
+        if is_spec_decode:
             # Cache decoder hidden states for serial MTP computation
             # after speculative token verification.
-            self._decoder_hidden_states_cache = hidden_states
-        else:
+            assert inference_context is not None
+            if self.config.inference_cuda_graph_scope == InferenceCudaGraphScope.block:
+                assert inference_context.mtp_decoder_hidden_states is not None
+                inference_context.mtp_decoder_hidden_states[: hidden_states.shape[0]].copy_(
+                    hidden_states
+                )
+            else:
+                inference_context.mtp_decoder_hidden_states = hidden_states
+        elif not in_inference_mode:
             # In training/eval, use the utility function for processing MTP loss/scaling.
             hidden_states = process_mtp_loss(
                 hidden_states=hidden_states,
@@ -134,8 +140,10 @@ def gpt_model_postprocess(
                 compute_language_model_loss=self.compute_language_model_loss,
                 config=self.config,
                 cp_group=self.pg_collection.cp,
+                tp_group=self.tp_group,
                 packed_seq_params=packed_seq_params,
                 scale_logits_fn=self._scale_logits if self.config.use_mup else None,
+                input_ids=input_ids,
             )
     sequence_parallel_override = False
 
@@ -513,20 +521,23 @@ class GPTModel:
             )
         else:
             off_interface.init_chunk_handler(
+                pp_rank=self.pg_collection.pp.rank(),
                 vp_size=self.config.virtual_pipeline_model_parallel_size,
                 vp_stage=self.vp_stage,
                 min_offloaded_tensor_size=self.config.min_offloaded_tensor_size,
+                delta_offload_bytes_across_pp_ranks=self.config.delta_offload_bytes_across_pp_ranks,
+                activation_offload_fraction=self.config.activation_offload_fraction,
                 max_inflight_offloads=self.config.fine_grained_offloading_max_inflight_offloads,
             )
         if self.disable_param_offloading:
             for param in self.decoder.parameters():
-                off_interface.mark_not_offloadable(param)
+                off_interface.mark_not_offload(param)
             if self.mtp_process:
                 for param in self.mtp.parameters():
-                    off_interface.mark_not_offloadable(param)
+                    off_interface.mark_not_offload(param)
             if self.post_process:
                 for param in self.output_layer.parameters():
-                    off_interface.mark_not_offloadable(param)
+                    off_interface.mark_not_offload(param)
             self.disable_param_offloading = False
 
     def shared_embedding_or_output_weight(self) -> Tensor:
@@ -663,6 +674,12 @@ class GPTModel:
                     f"input_ids shape {input_ids.shape}"
                 )
             decoder_input = self.embedding(input_ids=input_ids, position_ids=position_ids)
+            if self.config.sequence_parallel and not self.embedding.scatter_to_sequence_parallel:
+                # The embedding skips SP scatter for models whose outer wrapper scatters instead
+                # (e.g. VLM LMs); scatter here so a standalone LM forward isn't double-gathered.
+                decoder_input = tensor_parallel.scatter_to_sequence_parallel_region(
+                    decoder_input, group=self.pg_collection.tp
+                )
             if padding_mask is not None and self.config.sequence_parallel:
                 padding_mask = (
                     tensor_parallel.scatter_to_sequence_parallel_region(

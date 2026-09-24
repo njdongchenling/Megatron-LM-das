@@ -7,6 +7,11 @@ import torch
 
 from megatron.core.pipeline_parallel.utils import make_viewless
 
+try:
+    from transformer_engine.pytorch.ep import is_symm_backed
+except ImportError:
+    is_symm_backed = None
+
 
 def set_ideal_affinity_for_current_gpu():
     pass
@@ -45,6 +50,7 @@ class ScheduleNode():
         backward_func: Optional[Callable] = None,
         free_input: bool = False,
         name: str = "schedule_node",
+        ncclep_zero_copy: bool = False,
     ):
         """Initialize a schedule node.
 
@@ -69,6 +75,7 @@ class ScheduleNode():
         self.stream = stream
         self.event = event
         self.free_input = free_input
+        self.ncclep_zero_copy = ncclep_zero_copy
         self.inputs = None
         self.outputs = None
         self.is_recompute = False
@@ -117,7 +124,13 @@ class ScheduleNode():
             for input in inputs:
                 if input is not None:
                     input.record_stream(self.stream)
-                    input.untyped_storage().resize_(0)
+                    # Skip symmetric-memory (zero-copy EP) buffers
+                    if not (
+                        self.ncclep_zero_copy
+                        and is_symm_backed is not None
+                        and is_symm_backed(input)
+                    ):
+                        input.untyped_storage().resize_(0)
 
         return self.outputs
 

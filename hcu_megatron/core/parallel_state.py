@@ -17,6 +17,7 @@ from megatron.core import parallel_state
 from megatron.core.parallel_state import (
     RankGenerator,
     overwrite_nccl_comm_cfgs,
+    _inject_gtp_remat_axis,
 )
 
 from hcu_megatron.training.arguments import get_adaptor_args
@@ -249,6 +250,8 @@ def initialize_model_parallel_wrapper(fn):
         hierarchical_context_parallel_sizes: Optional[List[int]] = None,
         hybrid_context_parallel: bool = False,
         expert_model_parallel_size: int = 1,
+        gtp_remat_size: int = 1,
+        expert_gtp_remat_size: int = 1,
         num_distributed_optimizer_instances: int = 1,
         expert_tensor_parallel_size: Optional[int] = None,
         nccl_communicator_config_path: Optional[str] = None,
@@ -272,6 +275,8 @@ def initialize_model_parallel_wrapper(fn):
             hierarchical_context_parallel_sizes=hierarchical_context_parallel_sizes,
             hybrid_context_parallel=hybrid_context_parallel,
             expert_model_parallel_size=expert_model_parallel_size,
+            gtp_remat_size=gtp_remat_size,
+            expert_gtp_remat_size=expert_gtp_remat_size,
             num_distributed_optimizer_instances=num_distributed_optimizer_instances,
             expert_tensor_parallel_size=expert_tensor_parallel_size,
             nccl_communicator_config_path=nccl_communicator_config_path,
@@ -303,16 +308,6 @@ def initialize_model_parallel_wrapper(fn):
 
             rank = torch.distributed.get_rank()
 
-            decoder_rank_generator = RankGenerator(
-                tp=tensor_model_parallel_size,
-                ep=1,
-                dp=data_parallel_size,
-                pp=pipeline_model_parallel_size,
-                cp=context_parallel_size,
-                order=order,
-                rank_offset=rank_offset,
-            )
-
             nccl_comm_cfgs = {}
             if nccl_communicator_config_path is not None:
                 try:
@@ -331,11 +326,29 @@ def initialize_model_parallel_wrapper(fn):
             for pg_name in high_priority_stream_groups:
                 overwrite_nccl_comm_cfgs(nccl_comm_cfgs, pg_name, ("is_high_priority_stream", True))
 
+            decoder_order = _inject_gtp_remat_axis(order, after="tp")
+
+            decoder_rank_generator = RankGenerator(
+                tp=tensor_model_parallel_size,
+                ep=1,
+                dp=data_parallel_size,
+                pp=pipeline_model_parallel_size,
+                cp=context_parallel_size,
+                order=decoder_order,
+                rank_offset=rank_offset,
+                gtp_remat=gtp_remat_size,
+            )
+
             for ranks in decoder_rank_generator.get_ranks('pp'):
                 group = create_group(
                     ranks,
                     timeout=timedelta(minutes=distributed_timeout_minutes),
-                    pg_options=get_nccl_options("pp-lmhead", nccl_comm_cfgs),
+                    backend=pipeline_model_parallel_comm_backend,
+                    pg_options=(
+                        None
+                        if pipeline_model_parallel_comm_backend == "ucc"
+                        else get_nccl_options("pp-lmhead", nccl_comm_cfgs)
+                    ),
                     group_desc="LM_HEAD_MODEL_PARALLEL_GROUP",
                 )
                 if rank in ranks:

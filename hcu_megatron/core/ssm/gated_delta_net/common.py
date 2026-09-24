@@ -1,4 +1,4 @@
-# Copyright (c) 2025, NVIDIA CORPORATION. All rights reserved.
+# Copyright (c) 2026, NVIDIA CORPORATION. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2025, Songlin Yang, Jan Kautz, Ali Hatamizadeh.
 # Copyright (c) 2026 Hygon Information Technology Co., Ltd.
@@ -28,7 +28,7 @@ def _fused_rmsnorm_silu_gate(
     return y.to(x_dtype)
 
 
-class GatedDeltaNet:
+class _GDNBase:
     def _apply_gated_norm(self, x, gate):
         if self._can_use_fused_gated_rmsnorm():
             return _fused_rmsnorm_silu_gate(

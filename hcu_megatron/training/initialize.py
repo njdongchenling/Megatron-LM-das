@@ -9,10 +9,11 @@ import torch
 
 from datetime import timedelta
 from functools import wraps
+from typing import Optional
 
 from megatron.training import inprocess_restart
 from megatron.core import mpu, tensor_parallel
-from megatron.core.utils import is_torch_min_version
+from megatron.core.utils import get_pg_rank, is_torch_min_version
 from megatron.training.utils import print_rank_0, warn_rank_0
 
 from hcu_megatron.training import get_args
@@ -26,6 +27,13 @@ def initialize_megatron_wrapper(initialize_megatron_func):
         get_embedding_ranks=None,
         get_position_embedding_ranks=None,
         store=None,
+        skip_model_parallel_init=False,
+        seed_pp_group=None,
+        seed_dp_group=None,
+        seed_tp_group=None,
+        seed_ep_group=None,
+        seed_etp_group=None,
+        skip_random_seed=False,
     ):
 
         initialize_megatron_func(
@@ -34,6 +42,13 @@ def initialize_megatron_wrapper(initialize_megatron_func):
             get_embedding_ranks=get_embedding_ranks,
             get_position_embedding_ranks=get_position_embedding_ranks,
             store=store,
+            skip_model_parallel_init=skip_model_parallel_init,
+            seed_pp_group=seed_pp_group,
+            seed_dp_group=seed_dp_group,
+            seed_tp_group=seed_tp_group,
+            seed_ep_group=seed_ep_group,
+            seed_etp_group=seed_etp_group,
+            skip_random_seed=skip_random_seed,
         )
 
         args = get_args()
@@ -52,7 +67,8 @@ def initialize_megatron_wrapper(initialize_megatron_func):
     return wrapper
 
 
-def _initialize_distributed(get_embedding_ranks, get_position_embedding_ranks, store):
+def _initialize_distributed(get_embedding_ranks, get_position_embedding_ranks, store,
+                            skip_model_parallel_init=False):
     """Initialize torch.distributed and core model parallel."""
     args = get_args()
 
@@ -155,16 +171,29 @@ def _initialize_distributed(get_embedding_ranks, get_position_embedding_ranks, s
 
     # Set the tensor model-parallel, pipeline model-parallel, and
     # data-parallel communicators.
-    if device_count > 0:
+    # (skipped when caller owns model-parallel setup)
+    if device_count > 0 and not skip_model_parallel_init:
         if mpu.model_parallel_is_initialized():
             print("model parallel is already initialized")
         else:
+            if args.gtp_weight_remat_size > 1 or args.expert_gtp_weight_remat_size > 1:
+                from megatron.core.tensor_parallel.gtp_api import HAVE_GTP
+
+                assert HAVE_GTP, (
+                    "GTP requires TransformerEngine >= 2.19. "
+                    "Set both --gtp_remat-weight-remat-size and "
+                    "--expert-generalized-tensor-parallel-remat-size to 1 to disable GTP."
+                )
             mpu.initialize_model_parallel(
                 args.tensor_model_parallel_size,
                 args.pipeline_model_parallel_size,
                 args.virtual_pipeline_model_parallel_size,
                 pipeline_model_parallel_comm_backend=args.pipeline_model_parallel_comm_backend,
                 use_sharp=args.use_sharp,
+                # GTP_remat/EGTP_remat need world divisible by TP*PP*CP*GTP_remat (expert grid
+                # by ETP*EP*PP*EGTP_remat). Inactive when the remat sizes are 1.
+                gtp_remat_size=args.gtp_weight_remat_size,
+                expert_gtp_remat_size=args.expert_gtp_weight_remat_size,
                 context_parallel_size=args.context_parallel_size,
                 hierarchical_context_parallel_sizes=args.hierarchical_context_parallel_sizes,
                 hybrid_context_parallel=args.hybrid_context_parallel,
@@ -185,6 +214,10 @@ def _initialize_distributed(get_embedding_ranks, get_position_embedding_ranks, s
                 f"{mpu.get_tensor_model_parallel_world_size()}"
             )
             print_rank_0(
+                f"> initialized gtp weight remat with size "
+                f"{mpu.get_gtp_weight_remat_world_size()}"
+            )
+            print_rank_0(
                 f"> initialized pipeline model parallel with size "
                 f"{mpu.get_pipeline_model_parallel_world_size()}"
             )
@@ -196,20 +229,41 @@ def _set_random_seed(
     te_rng_tracker: bool = False,
     inference_rng_tracker: bool = False,
     use_cudagraphable_rng: bool = False,
+    pp_group: Optional[torch.distributed.ProcessGroup] = None,
+    dp_group: Optional[torch.distributed.ProcessGroup] = None,
+    tp_group: Optional[torch.distributed.ProcessGroup] = None,
+    ep_group: Optional[torch.distributed.ProcessGroup] = None,
+    etp_group: Optional[torch.distributed.ProcessGroup] = None,
 ):
-    """Set random seed for reproducability."""
+    """Set random seed for reproducability.
+
+    The optional pp/dp/tp/ep/etp groups let a caller without an initialized mpu
+    (e.g. a disjoint-grid run) supply the parallel ranks explicitly; each falls
+    back to the mpu group when None.
+    """
     if seed_ is not None and seed_ > 0:
         # Ensure that different pipeline MP stages get different seeds.
-        seed = seed_ + (100 * mpu.get_pipeline_model_parallel_rank())
+        pp_rank = get_pg_rank(pp_group) if pp_group is not None else mpu.get_pipeline_model_parallel_rank()
+        seed = seed_ + (100 * pp_rank)
         # Ensure different data parallel ranks get different seeds
         if data_parallel_random_init:
-            seed = seed + (10 * mpu.get_data_parallel_rank())
+            dp_rank = get_pg_rank(dp_group) if dp_group is not None else mpu.get_data_parallel_rank()
+            seed = seed + (10 * dp_rank)
         random.seed(seed)
         np.random.seed(seed)
         torch.manual_seed(seed)
         if torch.cuda.device_count() > 0:
+            tp_rank = get_pg_rank(tp_group) if tp_group is not None else None
+            ep_rank = get_pg_rank(ep_group) if ep_group is not None else None
+            etp_rank = get_pg_rank(etp_group) if etp_group is not None else None
             tensor_parallel.model_parallel_cuda_manual_seed(
-                seed, te_rng_tracker, inference_rng_tracker, use_cudagraphable_rng
+                seed,
+                te_rng_tracker,
+                inference_rng_tracker,
+                use_cudagraphable_rng,
+                tp_rank=tp_rank,
+                ep_rank=ep_rank,
+                etp_rank=etp_rank,
             )
 
         args = get_args()

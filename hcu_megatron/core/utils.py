@@ -8,7 +8,7 @@ from hcu_megatron.training.arguments import get_adaptor_args
 
 def get_batch_on_this_tp_rank(
     batch: dict[str, torch.Tensor],
-    is_sft: bool,
+    has_cu_seqlens: bool,
     is_hybrid_cp: bool,
     create_attention_mask_in_dataloader: bool,
     broadcast_src_rank: int,
@@ -103,7 +103,7 @@ def get_batch_on_this_tp_rank(
             _broadcast(batch['labels'])
             _broadcast(batch['loss_mask'])
             _broadcast(batch['position_ids'])
-            if is_sft or is_hybrid_cp:
+            if has_cu_seqlens or is_hybrid_cp:
                 _broadcast_cu_seqlens(batch['cu_seqlens'])
                 _broadcast(batch['max_seqlen'])
                 if cp_size > 1:
@@ -116,7 +116,7 @@ def get_batch_on_this_tp_rank(
         elif is_pipeline_first_stage:
             _broadcast(batch['tokens'])
             _broadcast(batch['position_ids'])
-            if is_sft:
+            if has_cu_seqlens:
                 _broadcast_cu_seqlens(batch['cu_seqlens'])
                 _broadcast(batch['max_seqlen'])
                 if cp_size > 1:
@@ -137,7 +137,7 @@ def get_batch_on_this_tp_rank(
 
             _broadcast(batch['labels'])
             _broadcast(batch['loss_mask'])
-            if is_sft:
+            if has_cu_seqlens:
                 _broadcast_cu_seqlens(batch['cu_seqlens'])
                 _broadcast(batch['max_seqlen'])
                 if cp_size > 1:
@@ -145,7 +145,7 @@ def get_batch_on_this_tp_rank(
             if create_attention_mask_in_dataloader:
                 _broadcast(batch['attention_mask'])
 
-        elif is_sft:
+        elif has_cu_seqlens:
             # NOTE(asolergi-nv): Broadcast required THD metadata for SFT to intermediate stages
             batch["tokens"] = None
             batch["labels"] = None
@@ -178,8 +178,10 @@ def get_batch_on_this_tp_rank(
         attention_mask = None
         local_cp_size = None
 
-        if is_sft or is_hybrid_cp:
-            max_seqlen = torch.empty(1, dtype=torch.int32, device=torch.cuda.current_device())
+        if has_cu_seqlens or is_hybrid_cp:
+            max_seqlen = torch.empty(
+                micro_batch_size, dtype=torch.int32, device=torch.cuda.current_device()
+            )
         if create_attention_mask_in_dataloader:
             attention_mask = torch.empty(
                 (micro_batch_size, 1, seq_length, seq_length),
@@ -201,13 +203,21 @@ def get_batch_on_this_tp_rank(
                 return None
 
             # cu_seqlens / cu_seqlens_padded carry the dataloader's batch dim
-            # throughout (mbs=1 for packed sequences). Allocate (1, n) so the
-            # shape on receiving ranks matches the (1, n) tensor TP rank 0 sent.
-            cu_seqlens = torch.empty((1, n), dtype=torch.int32, device=dev)
+            # (micro_batch_size, padded_len) after default_collate. Preserve
+            # the 2-D layout so flatten_batch_for_packed_sequences can merge
+            # samples correctly when micro_batch_size > 1.
+            assert n % micro_batch_size == 0, (
+                f"cu_seqlens numel ({n}) is not divisible by "
+                f"micro_batch_size ({micro_batch_size})"
+            )
+            cu_seqlens = torch.empty(
+                (micro_batch_size, n // micro_batch_size), dtype=torch.int32, device=dev
+            )
             _broadcast(cu_seqlens)
-            assert (
-                cu_seqlens.dim() == 2 and cu_seqlens.shape[0] == 1
-            ), f"Expected cu_seqlens shape (1, n), got {tuple(cu_seqlens.shape)}"
+            assert cu_seqlens.dim() == 2 and cu_seqlens.shape[0] == micro_batch_size, (
+                f"Expected cu_seqlens shape ({micro_batch_size}, "
+                f"{n // micro_batch_size}), got {tuple(cu_seqlens.shape)}"
+            )
             assert (
                 cu_seqlens.dtype == torch.int32
             ), f"Expected cu_seqlens to be of type torch.int32, got {cu_seqlens.dtype}"
@@ -218,7 +228,7 @@ def get_batch_on_this_tp_rank(
             _broadcast(labels)
             _broadcast(loss_mask)
             _broadcast(position_ids)
-            if is_sft or is_hybrid_cp:
+            if has_cu_seqlens or is_hybrid_cp:
                 cu_seqlens = _broadcast_cu_seqlens()
                 _broadcast(max_seqlen)
                 if cp_size > 1:
@@ -231,7 +241,7 @@ def get_batch_on_this_tp_rank(
         elif is_pipeline_first_stage:
             _broadcast(tokens)
             _broadcast(position_ids)
-            if is_sft:
+            if has_cu_seqlens:
                 cu_seqlens = _broadcast_cu_seqlens()
                 _broadcast(max_seqlen)
                 if cp_size > 1:
@@ -252,7 +262,7 @@ def get_batch_on_this_tp_rank(
 
             _broadcast(labels)
             _broadcast(loss_mask)
-            if is_sft:
+            if has_cu_seqlens:
                 cu_seqlens = _broadcast_cu_seqlens()
                 _broadcast(max_seqlen)
                 if cp_size > 1:
@@ -260,7 +270,7 @@ def get_batch_on_this_tp_rank(
             if create_attention_mask_in_dataloader:
                 _broadcast(attention_mask)
 
-        elif is_sft:
+        elif has_cu_seqlens:
             # NOTE(asolergi-nv): Broadcast required THD metadata for SFT to intermediate stages
             tokens = None
             labels = None

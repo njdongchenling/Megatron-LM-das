@@ -33,16 +33,6 @@ from hcu_megatron.core.tensor_parallel.random import CheckpointManager
 from hcu_megatron.training import get_args
 
 
-@functools.lru_cache(maxsize=None)
-def _get_offloading_interface():
-    """Get the offloading interface for fine-grained activation offloading."""
-    from megatron.core.pipeline_parallel.fine_grained_activation_offload import (
-        FineGrainedActivationOffloadingInterface,
-    )
-
-    return FineGrainedActivationOffloadingInterface
-
-
 def get_transformer_layer_offset(
     config: TransformerConfig, vp_stage: Optional[int] = None, pp_rank: Optional[int] = None
 ):
@@ -305,21 +295,18 @@ class TransformerLayer():
                 context (Tensor): Updated context tensor if cross-attention is used,
                 otherwise None.
         """
-        from megatron.core.pipeline_parallel.fine_grained_activation_offload import (
-            FineGrainedActivationOffloadingInterface as off_interface,
-        )
-
         inference_context = deprecate_inference_params(inference_context, inference_params)
 
         # Optional Input Layer norm
+        attn_norm_manager = self.off_interface(self.offload_attn_norm, hidden_states, "attn_norm")
         if self.recompute_input_layernorm:
             self.input_layernorm_checkpoint = tensor_parallel.CheckpointWithoutOutput()
-            with off_interface(self.offload_attn_norm, hidden_states, "attn_norm") as hidden_states:
+            with attn_norm_manager as hidden_states:
                 input_layernorm_output = self.input_layernorm_checkpoint.checkpoint(
                     apply_module(self.input_layernorm), hidden_states
                 )
         else:
-            with off_interface(self.offload_attn_norm, hidden_states, "attn_norm") as hidden_states:
+            with attn_norm_manager as hidden_states:
                 input_layernorm_output = apply_module(self.input_layernorm)(hidden_states)
 
         if isinstance(input_layernorm_output, tuple):
@@ -400,10 +387,9 @@ class TransformerLayer():
 
         # Delay the offload of the attention norm until after the self_attn_bda has been computed
         # because the residual is needed in the self_attn_bda.
-        if self.offload_attn_norm:
-            hidden_states = off_interface.group_commit(
-                hidden_states, name="attn_norm", forced_released_tensors=[residual]
-            )
+        hidden_states = attn_norm_manager.group_offload(
+            hidden_states, forced_released_tensors=[residual]
+        )
 
         # Optional Layer norm after self-attention
         pre_cross_attn_layernorm_output = apply_module(self.pre_cross_attn_layernorm)(hidden_states)
@@ -518,7 +504,6 @@ class HyperConnectionTransformerLayer(MegatronCoreTransformerLayer):
         # is IdentityOp (fused into TE linear) — there is nothing to recompute.
         self.mhc_checkpoint_input_layernorm = not isinstance(self.input_layernorm, IdentityOp)
         self.mhc_checkpoint_pre_mlp_layernorm = not isinstance(self.pre_mlp_layernorm, IdentityOp)
-        self.off_interface = _get_offloading_interface()
 
     def get_layer_static_inputs(self, seq_length, micro_batch_size):
         """Override to produce n-stream hidden_states of shape [s, b, n*C].
@@ -684,10 +669,9 @@ class HyperConnectionTransformerLayer(MegatronCoreTransformerLayer):
             )
         nvtx_range_pop(suffix="self_attention_fused_h_res_h_post_bda")
 
-        if self.offload_attn_norm:
-            hidden_states = off_interface.group_commit(
-                hidden_states, name="attn_norm", forced_released_tensors=[residual]
-            )
+        hidden_states = attn_norm_manager.group_offload(
+            hidden_states, forced_released_tensors=[residual]
+        )
 
         # Cross-attention (no hyper connection support).
         residual = hidden_states
@@ -845,9 +829,6 @@ class HyperConnectionTransformerLayer(MegatronCoreTransformerLayer):
         Returns:
             output (Tensor): Transformed hidden states of shape [s, b, h].
         """
-        from megatron.core.pipeline_parallel.fine_grained_activation_offload import (
-            FineGrainedActivationOffloadingInterface as off_interface,
-        )
         if self.recompute_pre_mlp_layernorm or (
             mhc_mlp_bda_recompute_manager is not None and self.mhc_checkpoint_pre_mlp_layernorm
         ):
@@ -869,10 +850,11 @@ class HyperConnectionTransformerLayer(MegatronCoreTransformerLayer):
             )
         nvtx_range_pop(suffix="mlp_fused_h_res_h_post_bda")
 
-        if self.offload_mlp_norm:
-            hidden_states = off_interface.group_commit(
-                hidden_states, name="mlp_norm", forced_released_tensors=[residual]
+        if self.mlp_norm_manager is not None:
+            hidden_states = self.mlp_norm_manager.group_offload(
+                hidden_states, forced_released_tensors=[residual]
             )
+            self.mlp_norm_manager = None
 
         output = make_viewless_tensor(
             inp=hidden_states, requires_grad=hidden_states.requires_grad, keep_graph=True
@@ -908,9 +890,7 @@ class HyperConnectionTransformerLayer(MegatronCoreTransformerLayer):
         ):
             assert len(cuda_graph_output) == 1, "CUDA Graph output should be the layer output."
             output = cuda_graph_output.pop()
-            assert (
-                not self.config.overlap_moe_expert_parallel_comm
-            ), "EP overlap must be \
+            assert not self.config.overlap_moe_expert_parallel_comm, "EP overlap must be \
                 disabled when CUDA graph captures the whole MLP/MoE part."
         elif self.is_moe_layer and CudaGraphScope.moe_router in self.config.cuda_graph_scope:
             # Pop HC state (appended during capture in _forward_mlp).

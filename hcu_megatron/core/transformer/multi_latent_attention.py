@@ -91,7 +91,8 @@ class MLASelfAttention():
         # Get the query, key and value tensors based on the type of attention -
         # self or cross attn.
         # query: [96, 1, 16, 128], key:[96, 1, 16, 128], value:[96, 1, 16, 128]
-        with off_interface(self.offload_qkv_linear, hidden_states, "qkv_linear") as hidden_states:
+        qkv_linear_manager = off_interface(self.offload_qkv_linear, hidden_states, "qkv_linear")
+        with qkv_linear_manager as hidden_states:
             query, key, value, q_compressed, _ = self.get_query_key_value_tensors(
                 hidden_states,
                 key_value_states,
@@ -99,10 +100,7 @@ class MLASelfAttention():
                 packed_seq_params,
                 inference_context=inference_context,
             )
-        if self.offload_qkv_linear:
-            query = off_interface.group_commit(
-                query, name="qkv_linear", forced_released_tensors=[hidden_states]
-            )
+        query = qkv_linear_manager.group_offload(query, forced_released_tensors=[hidden_states])
 
         self.hidden_states = hidden_states
 
@@ -164,26 +162,30 @@ class MLASelfAttention():
 
         thd_packed_seq = packed_seq_params is not None and packed_seq_params.qkv_format == "thd"
 
+        core_attention_extra_kwargs = {}
+        if getattr(self.core_attention, "requires_dsa_inputs", False):
+            core_attention_extra_kwargs = {"x": self.hidden_states, "qr": qkv_output[3]}
+
         # ==================================
         # core attention computation
         # ==================================
         # Need corresponding TE change
+        core_attn_manager = off_interface(
+            self.offload_core_attention and self.training, query, "core_attn"
+        )
         needs_output_trim = False
         if self.checkpoint_core_attention and self.training:
             core_attn_out = self._checkpointed_attention_forward(
-                query, key, value, attention_mask, packed_seq_params=packed_seq_params
+                query,
+                key,
+                value,
+                attention_mask,
+                packed_seq_params=packed_seq_params,
+                core_attention_extra_kwargs=core_attention_extra_kwargs,
             )
         else:
             if inference_context is None or inference_context.is_static_batching():
-                extra_kwargs = {}
-                if self.config.experimental_attention_variant == "dsa":
-                    # For dsa we need to pass in the original hidden states and the compressed
-                    # query representation.
-                    extra_kwargs["x"] = self.hidden_states
-                    extra_kwargs["qr"] = qkv_output[3]  # q_compressed
-                with off_interface(
-                    self.offload_core_attention and self.training, query, "core_attn"
-                ) as query:
+                with core_attn_manager as query:
                     core_attn_out = self._run_core_attention(
                         query,
                         key,
@@ -191,7 +193,7 @@ class MLASelfAttention():
                         attention_mask,
                         packed_seq_params=packed_seq_params,
                         attn_mask_type=attn_mask_type,
-                        **extra_kwargs,
+                        **core_attention_extra_kwargs,
                     )
             elif self.cache_mla_latents:
                 value, need_v_pad, orig_v_dim, padded_v_dim = _prepare_mla_core_attention_value(
@@ -217,11 +219,9 @@ class MLASelfAttention():
                 if not inference_context.is_decode_only():
                     core_attn_out = rearrange(core_attn_out, 's b h d -> s b (h d)')
                 needs_output_trim = need_v_pad
-            if self.offload_core_attention and self.training:
-                core_attn_out = off_interface.group_commit(
-                    core_attn_out, name="core_attn", forced_released_tensors=[query, key, value]
-                )
-
+            core_attn_out = core_attn_manager.group_offload(
+                core_attn_out, forced_released_tensors=[query, key, value]
+            )
         # We are doing absorption with cache mla latents and decode mode.
         if self.cache_mla_latents and inference_context.is_decode_only():
             # core_attn_out = self.self.up_v_layer(core_attn_out)
@@ -254,10 +254,9 @@ class MLASelfAttention():
         # =================
         # Output. [sq, b, h]
         # =================
-        with off_interface(self.offload_attn_proj, core_attn_out, "attn_proj") as core_attn_out:
+        attn_proj_manager = off_interface(self.offload_attn_proj, core_attn_out, "attn_proj")
+        with attn_proj_manager as core_attn_out:
             output, bias = apply_module(self.linear_proj)(core_attn_out)
-        if self.offload_attn_proj:
-            output = off_interface.group_commit(
-                output, name="attn_proj", forced_released_tensors=[core_attn_out]
-            )
+        output = attn_proj_manager.group_offload(output, forced_released_tensors=[core_attn_out])
+
         return output, bias

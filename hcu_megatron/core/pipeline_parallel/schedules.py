@@ -33,6 +33,13 @@ from megatron.core.transformer.cuda_graphs import create_cudagraphs
 from megatron.core.transformer.moe.paged_stash import paged_stash_reset
 from megatron.core.transformer.moe.router import MoEAuxLossAutoScaler
 from megatron.core.transformer.multi_token_prediction import MTPLossAutoScaler
+from megatron.core.pipeline_parallel.schedules import (
+    _build_default_pg_collection,
+    _compute_loss_scale,
+    _get_experimental_attention_variant_loss_scale_func,
+    _get_moe_loss_scale,
+    _get_mtp_loss_scale,
+)
 from megatron.core.pipeline_parallel.utils import (
     is_pp_first_stage,
     is_pp_last_stage,
@@ -171,13 +178,8 @@ def forward_step_calc_loss(
     # Since we use a trick to do backward on the auxiliary loss, we need to set the scale
     # explicitly.
     if hasattr(config, 'num_moe_experts') and config.num_moe_experts is not None:
-        # Calculate the loss scale based on the grad_scale_func if available, else default to 1.
         device = get_tensor_device(output_tensor)
-        loss_scale = (
-            config.grad_scale_func(torch.ones(1, device=device))
-            if config.grad_scale_func is not None
-            else torch.ones(1, device=device)
-        )
+        loss_scale = _get_moe_loss_scale(config, device)
         # Set the loss scale
         if config.calculate_per_token_loss:
             MoEAuxLossAutoScaler.set_loss_scale(loss_scale)
@@ -186,18 +188,34 @@ def forward_step_calc_loss(
 
     # Set the loss scale for Multi-Token Prediction (MTP) loss.
     if hasattr(config, 'mtp_num_layers') and config.mtp_num_layers is not None:
-        # Calculate the loss scale based on the grad_scale_func if available, else default to 1.
+        # Calculate the loss scale based on mtp_grad_scale_func if available,
+        # else fall back to grad_scale_func, else default to 1.
         device = get_tensor_device(output_tensor)
-        loss_scale = (
-            config.grad_scale_func(torch.ones(1, device=device))
-            if config.grad_scale_func is not None
-            else torch.ones(1, device=device)
-        )
+        loss_scale = _get_mtp_loss_scale(config, device)
         # Set the loss scale
         if config.calculate_per_token_loss:
             MTPLossAutoScaler.set_loss_scale(loss_scale)
         else:
             MTPLossAutoScaler.set_loss_scale(loss_scale / num_microbatches)
+
+    # Set the loss scale for any experimental attention-variant auxiliary loss.
+    experimental_attention_variant_loss_scale_func = (
+        _get_experimental_attention_variant_loss_scale_func(config)
+    )
+    if experimental_attention_variant_loss_scale_func is not None:
+        device = get_tensor_device(output_tensor)
+        loss_scale = _compute_loss_scale(config, device)
+        if config.calculate_per_token_loss:
+            experimental_attention_variant_loss_scale_func(loss_scale)
+        else:
+            # TODO: This path assumes static CP across outstanding pipeline microbatches.
+            # Hybrid/dynamic CP currently requires per-token loss and no PP; if that
+            # changes, carry the scale per autograd context instead of via a
+            # process-wide scaler hook.
+            cp_size_for_scaling = cp_group_size if cp_group_size is not None else 1
+            experimental_attention_variant_loss_scale_func(
+                loss_scale * cp_size_for_scaling / num_microbatches
+            )
 
     return output_tensor, num_tokens
 
@@ -517,25 +535,10 @@ def forward_backward_pipelining_without_interleaving(
         p2p_communicator = P2PCommunicator(
             pp_group=parallel_state.get_pipeline_model_parallel_group(), config=config
         )
-        tp_group = parallel_state.get_tensor_model_parallel_group()
-        cp_group = parallel_state.get_context_parallel_group()
+        pg_collection = _build_default_pg_collection()
+        tp_group = pg_collection.tp
+        cp_group = pg_collection.cp
         cp_size = cp_group.size()
-        embd_group = parallel_state.get_embedding_group(check_initialized=False)
-        pos_emb_group = parallel_state.get_position_embedding_group(check_initialized=False)
-        pp_group = parallel_state.get_pipeline_model_parallel_group()
-
-        pg_collection = ProcessGroupCollection()
-        pg_collection.tp = tp_group
-        pg_collection.pp = pp_group
-        pg_collection.embd = embd_group
-        pg_collection.pos_embd = pos_emb_group
-        pg_collection.cp = cp_group
-        pg_collection.dp_cp = parallel_state.get_data_parallel_group(
-            with_context_parallel=True, partial_data_parallel=False
-        )
-        pg_collection.tp_dp_cp = parallel_state.get_tensor_and_data_parallel_group(
-            with_context_parallel=True
-        )
 
     elif p2p_communicator is not None and pg_collection is not None:
         assert hasattr(p2p_communicator, 'config'), "p2p_communicator must have a config"
@@ -906,25 +909,10 @@ def forward_backward_pipelining_zbh1(
         p2p_communicator = P2PCommunicator(
             pp_group=parallel_state.get_pipeline_model_parallel_group(), config=config
         )
-        tp_group = parallel_state.get_tensor_model_parallel_group()
-        cp_group = parallel_state.get_context_parallel_group()
+        pg_collection = _build_default_pg_collection()
+        tp_group = pg_collection.tp
+        cp_group = pg_collection.cp
         cp_size = cp_group.size()
-        embd_group = parallel_state.get_embedding_group(check_initialized=False)
-        pos_emb_group = parallel_state.get_position_embedding_group(check_initialized=False)
-        pp_group = parallel_state.get_pipeline_model_parallel_group()
-
-        pg_collection = ProcessGroupCollection()
-        pg_collection.tp = tp_group
-        pg_collection.pp = pp_group
-        pg_collection.embd = embd_group
-        pg_collection.pos_embd = pos_emb_group
-        pg_collection.cp = cp_group
-        pg_collection.dp_cp = parallel_state.get_data_parallel_group(
-            with_context_parallel=True, partial_data_parallel=False
-        )
-        pg_collection.tp_dp_cp = parallel_state.get_tensor_and_data_parallel_group(
-            with_context_parallel=True
-        )
 
     elif p2p_communicator is not None and pg_collection is not None:
         assert hasattr(p2p_communicator, 'config'), "p2p_communicator must have a config"

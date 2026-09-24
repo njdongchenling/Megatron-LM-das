@@ -48,9 +48,8 @@ class MegatronBasicFeature(AbstractFeature):
             patch_manager.register_patch('megatron.core.dist_checkpointing.strategies.filesystem_async.FileSystemWriterAsync.preload_tensors',
                                         FileSystemWriterAsync.preload_tensors)
             patch_manager.register_cls_funcs('megatron.core.dist_checkpointing.strategies.torch.TorchDistLoadShardedStrategy',
-                                                  [TorchDistLoadShardedStrategy.load,
-                                                   TorchDistLoadShardedStrategy.load_tensors_metadata,
-                                                   TorchDistLoadShardedStrategy.load_sharded_metadata,])
+                                        [TorchDistLoadShardedStrategy.load_tensors_metadata,
+                                         TorchDistLoadShardedStrategy.load_sharded_metadata,])
             #ckpt-memory-cache load norm
             patch_manager.register_patch('megatron.core.dist_checkpointing.validation._compute_shards_access',
                                         _compute_shards_access)
@@ -148,18 +147,18 @@ class MegatronBasicFeature(AbstractFeature):
                                     apply_wrapper=True)
 
     def register_core_ssm_patches(self, patch_manager, args):
-        from hcu_megatron.core.ssm.gated_delta_net import GatedDeltaNet
+        from hcu_megatron.core.ssm.gated_delta_net.common import _GDNBase
 
         patch_manager.register_patch(
-            'megatron.core.ssm.gated_delta_net.GatedDeltaNet._apply_gated_norm',
-            GatedDeltaNet._apply_gated_norm)
+            'megatron.core.ssm.gated_delta_net.common._GDNBase._apply_gated_norm',
+            _GDNBase._apply_gated_norm)
         patch_manager.register_patch(
-            'megatron.core.ssm.gated_delta_net.GatedDeltaNet._apply_gated_norm_fallback',
-            GatedDeltaNet._apply_gated_norm_fallback,
+            'megatron.core.ssm.gated_delta_net.common._GDNBase._apply_gated_norm_fallback',
+            _GDNBase._apply_gated_norm_fallback,
             create_dummy=True)
         patch_manager.register_patch(
-            'megatron.core.ssm.gated_delta_net.GatedDeltaNet._can_use_fused_gated_rmsnorm',
-            GatedDeltaNet._can_use_fused_gated_rmsnorm,
+            'megatron.core.ssm.gated_delta_net.common._GDNBase._can_use_fused_gated_rmsnorm',
+            _GDNBase._can_use_fused_gated_rmsnorm,
             create_dummy=True)
 
     def register_core_tokenizers_patches(self, patch_manager, args):
@@ -287,7 +286,6 @@ class MegatronBasicFeature(AbstractFeature):
     def register_miscellaneous_patches(self, patch_manager, args):
         from hcu_megatron.core.full_cuda_graph import clone_tensors_in_struct
         from hcu_megatron.core.parallel_state import create_group, initialize_model_parallel_wrapper
-        from hcu_megatron.miscellaneous.gpt_builders import gpt_builder_wrapper
         from hcu_megatron.training.arguments import validate_args_func_decorator, _print_args
 
         patch_manager.register_patch('megatron.training.arguments.validate_args',
@@ -305,10 +303,6 @@ class MegatronBasicFeature(AbstractFeature):
                                     create_group)
         patch_manager.register_patch('megatron.core.parallel_state.initialize_model_parallel',
                                     initialize_model_parallel_wrapper,
-                                    apply_wrapper=True)
-        # output model info
-        patch_manager.register_patch('gpt_builders.gpt_builder',
-                                    gpt_builder_wrapper,
                                     apply_wrapper=True)
         # support full-iteration CUDA Graphs
         patch_manager.register_patch('megatron.core.full_cuda_graph.clone_tensors_in_struct',

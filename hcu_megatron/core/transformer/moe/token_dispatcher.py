@@ -25,6 +25,7 @@ from megatron.core.transformer.moe.token_dispatcher import (
     MoETokenDispatcher,
 )
 from megatron.core.transformer.moe.token_dispatcher import _DeepepManager as MegatronCoreDeepepManager
+from megatron.core.transformer.moe.token_dispatcher import _NCCLEPManager
 from megatron.core.transformer.moe.token_dispatcher import MoEFlexTokenDispatcher as MegatronCoreMoEFlexTokenDispatcher
 from megatron.core.transformer.transformer_config import TransformerConfig
 
@@ -400,9 +401,18 @@ class MoEFlexTokenDispatcher(MegatronCoreMoEFlexTokenDispatcher):
                 config=self.config,
             )
             self.cudagraph_attrs = ['_comm_manager.token_probs', '_comm_manager.routing_map']
+        elif self.config.moe_flex_dispatcher_backend == "ncclep":
+            assert self.tp_size * self.ep_size > 1, "NCCL EP dispatcher requires TPxEP > 1"
+            self._comm_manager = _NCCLEPManager(
+                group=self.tp_ep_group,
+                num_local_experts=self.num_local_experts,
+                router_topk=self.tp_size * self.config.moe_router_topk,
+                num_experts=self.tp_size * self.config.num_moe_experts,
+                config=self.config,
+            )
+            self.cudagraph_attrs = ['_comm_manager.token_probs', '_comm_manager.token_indices']
         else:
             raise ValueError(
                 f"Invalid backend: {self.config.moe_flex_dispatcher_backend}"
-                "Please set --moe-flex-dispatcher-backend=deepep or "
-                "--moe-flex-dispatcher-backend=hybridep"
+                "Please set --moe-flex-dispatcher-backend to deepep, hybridep, or ncclep"
             )

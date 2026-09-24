@@ -1,12 +1,8 @@
 # Copyright (c) 2025, NVIDIA CORPORATION. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 Hygon Information Technology Co., Ltd.
-from contextlib import nullcontext
 
 import torch
-
-from megatron.core.enums import Fp8Recipe
-from megatron.core.fp8_utils import get_fp8_context
 
 from megatron.core.models.common.model_chunk_schedule_plan import TransformerLayerSchedulePlan as MegatronTransformerLayerSchedulePlan
 from megatron.core.models.common.model_chunk_schedule_plan import TransformerModelChunkSchedulePlan as MegatronTransformerModelChunkSchedulePlan
@@ -52,14 +48,14 @@ class TransformerLayerSchedulePlanWithoutSplitAttn(MegatronTransformerLayerSched
             b_grad = b_layer.moe_combine.backward(b_grad)
 
         if f_layer is not None:
-            with f_layer.get_fp8_context():
-                f_input = f_layer.attn.forward(f_input)
+            with f_layer.get_low_precision_context():
+                f_input = f_layer.pre_dispatch_computation.forward(f_input)
 
         if b_layer is not None:
             b_grad = b_layer.mlp.backward(b_grad)
 
         if f_layer is not None:
-            with f_layer.get_fp8_context():
+            with f_layer.get_low_precision_context():
                 f_input = f_layer.moe_dispatch.forward(f_input)
 
         if b_layer is not None:
@@ -68,28 +64,28 @@ class TransformerLayerSchedulePlanWithoutSplitAttn(MegatronTransformerLayerSched
             b_grad = b_layer.moe_dispatch.backward(b_grad)
 
         if b_layer is not None and b_layer.config.ep_overlap_early_attn_memory_release:
-            b_grad = b_layer.attn.backward(b_grad)
+            b_grad = b_layer.pre_dispatch_computation.backward(b_grad)
 
         if f_layer is not None:
-            with f_layer.get_fp8_context():
+            with f_layer.get_low_precision_context():
                 f_input = f_layer.mlp.forward(f_input)
 
         if f_layer is not None:
-            with f_layer.get_fp8_context():
+            with f_layer.get_low_precision_context():
                 f_input = f_layer.moe_combine.forward(f_input)
 
         if b_layer is not None and not b_layer.config.ep_overlap_early_attn_memory_release:
-            b_grad = b_layer.attn.backward(b_grad)
+            b_grad = b_layer.pre_dispatch_computation.backward(b_grad)
 
         if f_layer is not None:
-            with f_layer.get_fp8_context():
+            with f_layer.get_low_precision_context():
                 f_input = f_layer.mtp_post_process.forward(f_input)
 
         # Delay the last attn_dw in backward pass (attn_dw of the first layer)
         # for overlapping with the p2p comm
         if not block_level_wgrad_compute:
             if b_layer is not None and not is_last_layer_in_bwd:
-                b_layer.attn.backward_dw()
+                b_layer.pre_dispatch_computation.backward_dw()
 
         return f_input, b_grad
 
@@ -126,10 +122,10 @@ class TransformerLayerSchedulePlanWithSplitAttn:
         The event and chunk_state are binded to the TransformerModelChunkSchedulePlan
         and shared across all layers in the model chunk.
         """
-        from megatron.core.models.gpt.fine_grained_callables import TransformerLayerState
+        from megatron.core.models.common.utils import LayerState
 
         self.config = layer.config
-        self.layer_state = TransformerLayerState()
+        self.layer_state = LayerState()
         self.chunk_state = chunk_state
         self.layer = layer
         self.event = event
@@ -173,20 +169,16 @@ class TransformerLayerSchedulePlanWithSplitAttn:
         Builds the callable nodes for the transformer/mtp layer:
             attn_qkv, core_attn, attn_proj, mlp, moe_dispatch and moe_combine, and mtp_post_process.
         """
-        from megatron.core.transformer.moe.moe_layer import MoELayer
+        from megatron.core.models.common.fine_grained_callables import get_layer_moe_metadata
         from megatron.core.transformer.multi_token_prediction import MultiTokenPredictionLayer
 
-        from hcu_megatron.core.models.gpt.fine_grained_callables import TransformerLayerNode
-        from hcu_megatron.core.models.gpt.fine_grained_callables import build_layer_callables_with_split_attn
+        from hcu_megatron.core.models.common.utils import TransformerLayerNode
+        from hcu_megatron.core.models.common.fine_grained_callables import build_layer_callables_with_split_attn
 
-        # build the forward and backward callables for the transformer/mtp layer
         fwd_callables, bwd_dw_callable_map = build_layer_callables_with_split_attn(self.layer)
+        is_moe, num_local_experts = get_layer_moe_metadata(self.layer)
 
-        # get flags for latter use
         is_mtp = isinstance(self.layer, MultiTokenPredictionLayer)
-        transformer_layer = self.layer.mtp_model_layer if is_mtp else self.layer
-        is_moe = isinstance(transformer_layer.mlp, MoELayer)
-        num_local_experts = transformer_layer.mlp.num_local_experts if is_moe else None
 
         extra_args["config"] = self.layer.config
         extra_args["is_moe"] = is_moe
@@ -253,21 +245,25 @@ class TransformerLayerSchedulePlanWithSplitAttn:
             post_backward_hook: Callable(module) that releases backward-pass params
                 (bwd=True). Typically ``fsdp_wrapper.post_backward_release_module``.
         """
+        from megatron.core.models.hybrid.hybrid_block import HybridStack
         from megatron.core.transformer.multi_token_prediction import MultiTokenPredictionLayer
         from megatron.core.transformer.transformer_layer import TransformerLayer
 
-        assert isinstance(self.layer, (TransformerLayer, MultiTokenPredictionLayer)), (
+        assert isinstance(self.layer, (TransformerLayer, HybridStack, MultiTokenPredictionLayer)), (
             f"Megatron FSDP with EP Overlap only supports TransformerLayer, "
+            f"HybridStack and MultiTokenPredictionLayer, "
             f"but got {type(self.layer).__name__}."
         )
 
-        if isinstance(self.layer, TransformerLayer):
+        if isinstance(self.layer, (TransformerLayer, HybridStack)):
             hook_module = self.layer
         else:
             hook_module = self.layer.mtp_model_layer
 
-        # After the last backward op (attn), release backward-pass params.
-        self.attn.set_post_backward_hook(lambda: post_backward_hook(hook_module))
+        # After the last backward op (attn_qkv), release backward-pass params.
+        self.attn_qkv.set_post_backward_hook(
+            lambda: post_backward_hook(hook_module)
+        )
 
         # Determine the last node in forward order.
         if isinstance(self.moe_combine, NoopScheduleNode):
@@ -278,18 +274,9 @@ class TransformerLayerSchedulePlanWithSplitAttn:
         # After the last forward op, release forward-pass params.
         last_fwd_node.set_post_forward_hook(lambda: post_forward_hook(hook_module))
 
-    def get_fp8_context(self):
-        """
-        Get the fp8 context for the transformer layer.
-        """
-        use_inner_fp8_context = (
-            self.layer.config.fp8 and self.layer.config.fp8_recipe != Fp8Recipe.delayed
-        )
-        return (
-            get_fp8_context(self.layer.config, self.layer.layer_number - 1)
-            if use_inner_fp8_context
-            else nullcontext()
-        )
+    def get_low_precision_context(self):
+        """Get the low-precision context for the transformer layer."""
+        return self.layer.get_inner_quantization_context()
 
     @staticmethod
     def run(
@@ -330,7 +317,7 @@ class TransformerLayerSchedulePlanWithSplitAttn:
 
         f_attn_pre_b_combine_sync_event = F_ATTN_PRE_B_COMBINE_SYNC_EVENT if is_sync_1f1b else None
         if f_layer is not None:
-            with f_layer.get_fp8_context():
+            with f_layer.get_low_precision_context():
                 f_input = f_layer.attn_qkv.forward(
                     f_input,
                     stream_record_event=f_attn_pre_b_combine_sync_event,
@@ -343,7 +330,7 @@ class TransformerLayerSchedulePlanWithSplitAttn:
             )
 
         if f_layer is not None:
-            with f_layer.get_fp8_context():
+            with f_layer.get_low_precision_context():
                 f_input = f_layer.core_attn.forward(f_input)
                 f_input = f_layer.attn_proj.forward(
                     f_input,
@@ -353,7 +340,7 @@ class TransformerLayerSchedulePlanWithSplitAttn:
             b_grad = b_layer.mlp.backward(b_grad)
 
         if f_layer is not None:
-            with f_layer.get_fp8_context():
+            with f_layer.get_low_precision_context():
                 f_input = f_layer.moe_dispatch.forward(f_input,)
 
         if b_layer is not None:
@@ -362,7 +349,7 @@ class TransformerLayerSchedulePlanWithSplitAttn:
             b_grad = b_layer.moe_dispatch.backward(b_grad)
 
         if f_layer is not None:
-            with f_layer.get_fp8_context():
+            with f_layer.get_low_precision_context():
                 f_input = f_layer.mlp.forward(f_input)
 
         b_attn_post_f_combine_sync_event = B_ATTN_POST_F_COMBINE_SYNC_EVENT if is_sync_1f1b else None
@@ -373,7 +360,7 @@ class TransformerLayerSchedulePlanWithSplitAttn:
             )
 
         if f_layer is not None:
-            with f_layer.get_fp8_context():
+            with f_layer.get_low_precision_context():
                 f_input = f_layer.moe_combine.forward(
                     f_input,
                     stream_wait_event=b_attn_post_f_combine_sync_event,
@@ -384,7 +371,7 @@ class TransformerLayerSchedulePlanWithSplitAttn:
             b_grad = b_layer.attn_qkv.backward(b_grad)
 
         if f_layer is not None:
-            with f_layer.get_fp8_context():
+            with f_layer.get_low_precision_context():
                 f_input = f_layer.mtp_post_process.forward(f_input)
 
         # Delay the last attn_dw in backward pass (attn_dw of the first layer)
@@ -426,10 +413,7 @@ class TransformerModelChunkSchedulePlan(MegatronTransformerModelChunkSchedulePla
             return
         num_layers = len(module.layers)
         for layer_idx in range(num_layers):
-            extra_args = {
-                "is_first_layer": layer_idx == 0,
-                "is_last_layer": layer_idx == num_layers - 1,
-            }
+            extra_args = self._extra_args_for_layer(module, layer_idx, num_layers)
             layer_plan = get_transformer_layer_schedule_plan()(
                 module.layers[layer_idx],
                 self.event,
@@ -533,26 +517,26 @@ class TransformerModelChunkSchedulePlan(MegatronTransformerModelChunkSchedulePla
 
         if f_schedule_plan is not None and post_forward is not None:
             # post_forward()/send_forward_recv_forward() is running in the communication stream,
-            # so the p2p comm could be overlapped with the attn backward
+            # so the p2p comm could be overlapped with the pre_dispatch backward
             with torch.cuda.stream(get_comm_stream()):
                 f_schedule_plan.wait_current_stream()
                 post_forward(f_input, None if args.schedule_method == "dualpipev" else f_schedule_plan.vp_stage)
 
         # post_backward()/send_backward_recv_backward() is running in the computation stream,
-        # so the p2p comm could be overlapped with the wgrad of attn backward
+        # so the p2p comm could be overlapped with the wgrad of pre_dispatch backward
         if b_schedule_plan is not None and post_backward is not None:
             b_schedule_plan.wait_current_stream()
             post_backward(b_grad, None if args.schedule_method == "dualpipev" else b_schedule_plan.vp_stage)
 
-        # Delay the last attn_dw in backward pass (attn_dw of the first layer)
-        # for overlapping with the p2p comm
+        # Delay the last pre_dispatch_computation wgrad in backward pass (wgrad
+        # of the first layer) for overlapping with the p2p comm.
         if not block_level_wgrad_compute and b_num_layers > 0:
             assert b_layer is not None
             if get_adaptor_args().overlap_ep_comm_with_split_attn:
                 b_layer.attn_qkv.backward_dw()
                 b_layer.attn_proj.backward_dw()
             else:
-                b_layer.attn.backward_dw()
+                b_layer.pre_dispatch_computation.backward_dw()
             b_layer.release_state()
 
         # post process forward
@@ -581,7 +565,7 @@ class TransformerModelChunkSchedulePlan(MegatronTransformerModelChunkSchedulePla
                         b_layer.attn_qkv.backward_dw()
                         b_layer.attn_proj.backward_dw()
                     else:
-                        b_layer.attn.backward_dw()
+                        b_layer.pre_dispatch_computation.backward_dw()
                     b_layer.mlp.backward_dw()
                     b_layer.release_state()
             return f_input, chunk_backward_dw

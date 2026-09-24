@@ -57,10 +57,10 @@ class TransformerLayerSchedulePlanWithoutSplitAttn(MegatronTransformerLayerSched
         The event and chunk_state are binded to the TransformerModelChunkSchedulePlan
         and shared across all layers in the model chunk.
         """
-        from megatron.core.models.gpt.fine_grained_callables import TransformerLayerState
+        from megatron.core.models.common.utils import LayerState
 
         self.config = layer.config
-        self.layer_state = TransformerLayerState()
+        self.layer_state = LayerState()
         self.chunk_state = chunk_state
         self.layer = layer
         self.event = event
@@ -79,19 +79,18 @@ class TransformerLayerSchedulePlanWithoutSplitAttn(MegatronTransformerLayerSched
         Builds the callable nodes for the transformer/mtp layer:
             attn, mlp, moe_dispatch and moe_combine, and mtp_post_process.
         """
-        from megatron.core.models.gpt.fine_grained_callables import build_layer_callables
-        from megatron.core.transformer.moe.moe_layer import MoELayer
+        from megatron.core.models.common.fine_grained_callables import (
+            build_layer_callables,
+            get_layer_moe_metadata,
+        )
+        from megatron.core.models.common.utils import TransformerLayerNode
 
-        from hcu_megatron.core.models.gpt.fine_grained_callables import TransformerLayerNode
+        from hcu_megatron.core.models.common.utils import TransformerLayerNode
 
-        # build the forward and backward callables for the transformer/mtp layer
         fwd_callables, bwd_dw_callable_map = build_layer_callables(self.layer)
+        is_moe, num_local_experts = get_layer_moe_metadata(self.layer)
 
-        # get flags for latter use
         is_mtp = isinstance(self.layer, MultiTokenPredictionLayer)
-        transformer_layer = self.layer.mtp_model_layer if is_mtp else self.layer
-        is_moe = isinstance(transformer_layer.mlp, MoELayer)
-        num_local_experts = transformer_layer.mlp.num_local_experts if is_moe else None
 
         extra_args["config"] = self.layer.config
         extra_args["is_moe"] = is_moe
@@ -114,7 +113,7 @@ class TransformerLayerSchedulePlanWithoutSplitAttn(MegatronTransformerLayerSched
             )
 
         (
-            attn_module,
+            pre_dispatch_module,
             moe_dispatch_module,
             mlp_module,
             moe_combine_module,
@@ -123,7 +122,9 @@ class TransformerLayerSchedulePlanWithoutSplitAttn(MegatronTransformerLayerSched
 
         # Create nodes for different operations in the layer
         # Each node type has a predefined name that determines its memory strategy
-        self.attn = create_node(comp_stream, attn_module, "attn")
+        self.pre_dispatch_computation = create_node(
+            comp_stream, pre_dispatch_module, "pre_dispatch_computation"
+        )
         self.mlp = create_node(comp_stream, mlp_module, "mlp")
         if is_moe:
             self.moe_dispatch = create_node(comm_stream, moe_dispatch_module, "moe_dispatch")
@@ -186,8 +187,8 @@ class TransformerLayerSchedulePlanWithoutSplitAttn(MegatronTransformerLayerSched
 
         if b_layer is not None:
             with _fork_recompute_rng(b_layer_rng_states):
-                with torch.enable_grad(), b_layer.get_fp8_context():
-                    b_input_recompute = b_layer.attn.forward(b_input_recompute, is_recompute=True)
+                with torch.enable_grad(), b_layer.get_low_precision_context():
+                    b_input_recompute = b_layer.pre_dispatch_computation.forward(b_input_recompute, is_recompute=True)
                     b_input_recompute = b_layer.moe_dispatch.forward(b_input_recompute, is_recompute=True)
                     b_input_recompute = b_layer.mlp.forward(b_input_recompute, is_recompute=True)
                     b_input_recompute = b_layer.moe_combine.forward(b_input_recompute, is_recompute=True)
@@ -201,14 +202,14 @@ class TransformerLayerSchedulePlanWithoutSplitAttn(MegatronTransformerLayerSched
             b_grad = b_layer.moe_combine.backward(b_grad)
 
         if f_layer is not None:
-            with torch.no_grad(), f_layer.get_fp8_context():
-                f_input = f_layer.attn.forward(f_input)
+            with torch.no_grad(), f_layer.get_low_precision_context():
+                f_input = f_layer.pre_dispatch_computation.forward(f_input)
 
         if b_layer is not None:
             b_grad = b_layer.mlp.backward(b_grad)
 
         if f_layer is not None:
-            with torch.no_grad(), f_layer.get_fp8_context():
+            with torch.no_grad(), f_layer.get_low_precision_context():
                 f_input = f_layer.moe_dispatch.forward(f_input)
 
         if b_layer is not None:
@@ -217,28 +218,28 @@ class TransformerLayerSchedulePlanWithoutSplitAttn(MegatronTransformerLayerSched
             b_grad = b_layer.moe_dispatch.backward(b_grad)
 
         if b_layer is not None and b_layer.config.ep_overlap_early_attn_memory_release:
-            b_grad = b_layer.attn.backward(b_grad)
+            b_grad = b_layer.pre_dispatch_computation.backward(b_grad)
 
         if f_layer is not None:
-            with torch.no_grad(), f_layer.get_fp8_context():
+            with torch.no_grad(), f_layer.get_low_precision_context():
                 f_input = f_layer.mlp.forward(f_input)
 
         if f_layer is not None:
-            with torch.no_grad(), f_layer.get_fp8_context():
+            with torch.no_grad(), f_layer.get_low_precision_context():
                 f_input = f_layer.moe_combine.forward(f_input)
 
         if b_layer is not None and not b_layer.config.ep_overlap_early_attn_memory_release:
-            b_grad = b_layer.attn.backward(b_grad)
+            b_grad = b_layer.pre_dispatch_computation.backward(b_grad)
 
         if f_layer is not None:
-            with torch.no_grad(), f_layer.get_fp8_context():
+            with torch.no_grad(), f_layer.get_low_precision_context():
                 f_input = f_layer.mtp_post_process.forward(f_input)
 
         # Delay the last attn_dw in backward pass (attn_dw of the first layer)
         # for overlapping with the p2p comm
         if not block_level_wgrad_compute:
             if b_layer is not None and not is_last_layer_in_bwd:
-                b_layer.attn.backward_dw()
+                b_layer.pre_dispatch_computation.backward_dw()
 
         return f_input, b_grad
 
@@ -308,23 +309,23 @@ class TransformerLayerSchedulePlanWithoutSplitAttn(MegatronTransformerLayerSched
 
         if r_layer is not None:
             with _fork_recompute_rng(r_layer_rng_states):
-                with torch.enable_grad(), r_layer.get_fp8_context():
-                    r_input = r_layer.attn.forward(r_input, is_recompute=True)
+                with torch.enable_grad(), r_layer.get_low_precision_context():
+                    r_input = r_layer.pre_dispatch_computation.forward(r_input, is_recompute=True)
 
         if f_layer is not None:
-            with torch.no_grad(), f_layer.get_fp8_context():
-                f_input = f_layer.attn.forward(f_input)
+            with torch.no_grad(), f_layer.get_low_precision_context():
+                f_input = f_layer.pre_dispatch_computation.forward(f_input)
 
         if r_layer is not None:
             with _fork_recompute_rng(r_layer_rng_states):
-                with torch.enable_grad(), r_layer.get_fp8_context():
+                with torch.enable_grad(), r_layer.get_low_precision_context():
                     r_input = r_layer.moe_dispatch.forward(r_input, is_recompute=True)
 
         if b_layer is not None:
             b_grad = b_layer.mlp.backward(b_grad)
 
         if f_layer is not None:
-            with torch.no_grad(), f_layer.get_fp8_context():
+            with torch.no_grad(), f_layer.get_low_precision_context():
                 f_input = f_layer.moe_dispatch.forward(f_input)
 
         if b_layer is not None:
@@ -334,35 +335,35 @@ class TransformerLayerSchedulePlanWithoutSplitAttn(MegatronTransformerLayerSched
 
         if r_layer is not None:
             with _fork_recompute_rng(r_layer_rng_states):
-                with torch.enable_grad(), r_layer.get_fp8_context():
+                with torch.enable_grad(), r_layer.get_low_precision_context():
                     r_input = r_layer.mlp.forward(r_input, is_recompute=True)
 
         if b_layer is not None and b_layer.config.ep_overlap_early_attn_memory_release:
-            b_grad = b_layer.attn.backward(b_grad)
+            b_grad = b_layer.pre_dispatch_computation.backward(b_grad)
 
         if f_layer is not None:
-            with torch.no_grad(), f_layer.get_fp8_context():
+            with torch.no_grad(), f_layer.get_low_precision_context():
                 f_input = f_layer.mlp.forward(f_input)
 
         if r_layer is not None:
             with _fork_recompute_rng(r_layer_rng_states):
-                with torch.enable_grad(), r_layer.get_fp8_context():
+                with torch.enable_grad(), r_layer.get_low_precision_context():
                     r_input = r_layer.moe_combine.forward(r_input, is_recompute=True)
                     r_input = r_layer.mtp_post_process.forward(r_input, is_recompute=True)
 
         if f_layer is not None:
-            with torch.no_grad(), f_layer.get_fp8_context():
+            with torch.no_grad(), f_layer.get_low_precision_context():
                 f_input = f_layer.moe_combine.forward(f_input)
                 f_input = f_layer.mtp_post_process.forward(f_input)
 
         if b_layer is not None and not b_layer.config.ep_overlap_early_attn_memory_release:
-            b_grad = b_layer.attn.backward(b_grad)
+            b_grad = b_layer.pre_dispatch_computation.backward(b_grad)
 
         # Delay the last attn_dw in backward pass (attn_dw of the first layer)
         # for overlapping with the p2p comm
         if not block_level_wgrad_compute:
             if b_layer is not None and not is_last_layer_in_bwd:
-                b_layer.attn.backward_dw()
+                b_layer.pre_dispatch_computation.backward_dw()
 
         if r_layer is not None:
             r_layer.saved_tensors = None
@@ -426,8 +427,8 @@ class TransformerLayerSchedulePlanWithoutSplitAttn(MegatronTransformerLayerSched
         if b_layer is None:
             # can help improve performance
             with fork_recompute_rng(r_layer_rng_states):
-                with get_grad_context(r_layer is not None), r_or_f_layer.get_fp8_context():
-                    r_or_f_input = r_or_f_layer.attn.forward(r_or_f_input, is_recompute=r_layer is not None,)
+                with get_grad_context(r_layer is not None), r_or_f_layer.get_low_precision_context():
+                    r_or_f_input = r_or_f_layer.pre_dispatch_computation.forward(r_or_f_input, is_recompute=r_layer is not None,)
                     r_or_f_input = r_or_f_layer.moe_dispatch.forward(r_or_f_input, is_recompute=r_layer is not None,)
                     r_or_f_input = r_or_f_layer.mlp.forward(r_or_f_input, is_recompute=r_layer is not None,)
                     r_or_f_input = r_or_f_layer.moe_combine.forward(r_or_f_input, is_recompute=r_layer is not None,)
@@ -443,15 +444,15 @@ class TransformerLayerSchedulePlanWithoutSplitAttn(MegatronTransformerLayerSched
 
         if r_or_f_layer is not None:
             with fork_recompute_rng(r_layer_rng_states):
-                with get_grad_context(r_layer is not None), r_or_f_layer.get_fp8_context():
-                    r_or_f_input = r_or_f_layer.attn.forward(r_or_f_input, is_recompute=r_layer is not None,)
+                with get_grad_context(r_layer is not None), r_or_f_layer.get_low_precision_context():
+                    r_or_f_input = r_or_f_layer.pre_dispatch_computation.forward(r_or_f_input, is_recompute=r_layer is not None,)
 
         if b_layer is not None:
             b_grad = b_layer.mlp.backward(b_grad)
 
         if r_or_f_layer is not None:
             with fork_recompute_rng(r_layer_rng_states):
-                with get_grad_context(r_layer is not None), r_or_f_layer.get_fp8_context():
+                with get_grad_context(r_layer is not None), r_or_f_layer.get_low_precision_context():
                     r_or_f_input = r_or_f_layer.moe_dispatch.forward(r_or_f_input, is_recompute=r_layer is not None,)
 
         if b_layer is not None:
@@ -460,27 +461,27 @@ class TransformerLayerSchedulePlanWithoutSplitAttn(MegatronTransformerLayerSched
             b_grad = b_layer.moe_dispatch.backward(b_grad)
 
         if b_layer is not None and b_layer.config.ep_overlap_early_attn_memory_release:
-            b_grad = b_layer.attn.backward(b_grad)
+            b_grad = b_layer.pre_dispatch_computation.backward(b_grad)
 
         if r_or_f_layer is not None:
             with fork_recompute_rng(r_layer_rng_states):
-                with get_grad_context(r_layer is not None), r_or_f_layer.get_fp8_context():
+                with get_grad_context(r_layer is not None), r_or_f_layer.get_low_precision_context():
                     r_or_f_input = r_or_f_layer.mlp.forward(r_or_f_input, is_recompute=r_layer is not None,)
 
         if r_or_f_layer is not None:
             with fork_recompute_rng(r_layer_rng_states):
-                with get_grad_context(r_layer is not None), r_or_f_layer.get_fp8_context():
+                with get_grad_context(r_layer is not None), r_or_f_layer.get_low_precision_context():
                     r_or_f_input = r_or_f_layer.moe_combine.forward(r_or_f_input, is_recompute=r_layer is not None,)
                     r_or_f_input = r_or_f_layer.mtp_post_process.forward(r_or_f_input, is_recompute=r_layer is not None,)
 
         if b_layer is not None and not b_layer.config.ep_overlap_early_attn_memory_release:
-            b_grad = b_layer.attn.backward(b_grad)
+            b_grad = b_layer.pre_dispatch_computation.backward(b_grad)
 
         # Delay the last attn_dw in backward pass (attn_dw of the first layer)
         # for overlapping with the p2p comm
         if not block_level_wgrad_compute:
             if b_layer is not None and not is_last_layer_in_bwd:
-                b_layer.attn.backward_dw()
+                b_layer.pre_dispatch_computation.backward_dw()
 
         if r_layer is not None:
             r_layer.saved_tensors = None
@@ -532,20 +533,15 @@ class TransformerLayerSchedulePlanWithSplitAttn(_TransformerLayerSchedulePlanWit
         Builds the callable nodes for the transformer/mtp layer:
             attn_qkv, core_attn, attn_proj, mlp, moe_dispatch and moe_combine, and mtp_post_process.
         """
-        from megatron.core.transformer.moe.moe_layer import MoELayer
-        from megatron.core.transformer.multi_token_prediction import MultiTokenPredictionLayer
+        from megatron.core.models.common.fine_grained_callables import get_layer_moe_metadata
 
-        from hcu_megatron.core.models.gpt.fine_grained_callables import TransformerLayerNode
-        from hcu_megatron.core.models.gpt.fine_grained_callables import build_layer_callables_with_split_attn
+        from hcu_megatron.core.models.common.utils import TransformerLayerNode
+        from hcu_megatron.core.models.common.fine_grained_callables import build_layer_callables_with_split_attn
 
-        # build the forward and backward callables for the transformer/mtp layer
         fwd_callables, bwd_dw_callable_map = build_layer_callables_with_split_attn(self.layer)
+        is_moe, num_local_experts = get_layer_moe_metadata(self.layer)
 
-        # get flags for latter use
         is_mtp = isinstance(self.layer, MultiTokenPredictionLayer)
-        transformer_layer = self.layer.mtp_model_layer if is_mtp else self.layer
-        is_moe = isinstance(transformer_layer.mlp, MoELayer)
-        num_local_experts = transformer_layer.mlp.num_local_experts if is_moe else None
 
         extra_args["config"] = self.layer.config
         extra_args["is_moe"] = is_moe
@@ -652,7 +648,7 @@ class TransformerLayerSchedulePlanWithSplitAttn(_TransformerLayerSchedulePlanWit
 
         if b_layer is not None:
             with _fork_recompute_rng(b_layer_rng_states):
-                with torch.enable_grad(), b_layer.get_fp8_context():
+                with torch.enable_grad(), b_layer.get_low_precision_context():
                     b_input_recompute = b_layer.attn_qkv.forward(b_input_recompute, is_recompute=True)
                     b_input_recompute = b_layer.core_attn.forward(b_input_recompute, is_recompute=True)
                     b_input_recompute = b_layer.attn_proj.forward(b_input_recompute, is_recompute=True)
@@ -669,7 +665,7 @@ class TransformerLayerSchedulePlanWithSplitAttn(_TransformerLayerSchedulePlanWit
 
         f_attn_pre_b_combine_sync_event = F_ATTN_PRE_B_COMBINE_SYNC_EVENT if is_sync_1f1b else None
         if f_layer is not None:
-            with torch.no_grad(), f_layer.get_fp8_context():
+            with torch.no_grad(), f_layer.get_low_precision_context():
                 f_input = f_layer.attn_qkv.forward(
                     f_input,
                     stream_record_event=f_attn_pre_b_combine_sync_event,
@@ -682,7 +678,7 @@ class TransformerLayerSchedulePlanWithSplitAttn(_TransformerLayerSchedulePlanWit
             )
 
         if f_layer is not None:
-            with torch.no_grad(), f_layer.get_fp8_context():
+            with torch.no_grad(), f_layer.get_low_precision_context():
                 f_input = f_layer.core_attn.forward(f_input)
                 f_input = f_layer.attn_proj.forward(
                     f_input,
@@ -692,7 +688,7 @@ class TransformerLayerSchedulePlanWithSplitAttn(_TransformerLayerSchedulePlanWit
             b_grad = b_layer.mlp.backward(b_grad)
 
         if f_layer is not None:
-            with torch.no_grad(), f_layer.get_fp8_context():
+            with torch.no_grad(), f_layer.get_low_precision_context():
                 f_input = f_layer.moe_dispatch.forward(f_input,)
 
         if b_layer is not None:
@@ -701,7 +697,7 @@ class TransformerLayerSchedulePlanWithSplitAttn(_TransformerLayerSchedulePlanWit
             b_grad = b_layer.moe_dispatch.backward(b_grad)
 
         if f_layer is not None:
-            with torch.no_grad(), f_layer.get_fp8_context():
+            with torch.no_grad(), f_layer.get_low_precision_context():
                 f_input = f_layer.mlp.forward(f_input)
 
         b_attn_post_f_combine_sync_event = B_ATTN_POST_F_COMBINE_SYNC_EVENT if is_sync_1f1b else None
@@ -712,7 +708,7 @@ class TransformerLayerSchedulePlanWithSplitAttn(_TransformerLayerSchedulePlanWit
             )
 
         if f_layer is not None:
-            with torch.no_grad(), f_layer.get_fp8_context():
+            with torch.no_grad(), f_layer.get_low_precision_context():
                 f_input = f_layer.moe_combine.forward(
                     f_input,
                     stream_wait_event=b_attn_post_f_combine_sync_event,
@@ -723,7 +719,7 @@ class TransformerLayerSchedulePlanWithSplitAttn(_TransformerLayerSchedulePlanWit
             b_grad = b_layer.attn_qkv.backward(b_grad)
 
         if f_layer is not None:
-            with torch.no_grad(), f_layer.get_fp8_context():
+            with torch.no_grad(), f_layer.get_low_precision_context():
                 f_input = f_layer.mtp_post_process.forward(f_input)
 
         # Delay the last attn_dw in backward pass (attn_dw of the first layer)
@@ -811,7 +807,7 @@ class TransformerLayerSchedulePlanWithSplitAttn(_TransformerLayerSchedulePlanWit
         r_attn_pre_b_combine_sync_event = R_ATTN_PRE_B_COMBINE_SYNC_EVENT if is_sync_1f1b else None
         if r_layer is not None:
             with _fork_recompute_rng(r_layer_rng_states):
-                with torch.enable_grad(), r_layer.get_fp8_context():
+                with torch.enable_grad(), r_layer.get_low_precision_context():
                     r_input = r_layer.attn_qkv.forward(
                         r_input,
                         stream_record_event=r_attn_pre_b_combine_sync_event,
@@ -826,13 +822,13 @@ class TransformerLayerSchedulePlanWithSplitAttn(_TransformerLayerSchedulePlanWit
 
         if r_layer is not None:
             with _fork_recompute_rng(r_layer_rng_states):
-                with torch.enable_grad(), r_layer.get_fp8_context():
+                with torch.enable_grad(), r_layer.get_low_precision_context():
                     r_input = r_layer.core_attn.forward(r_input, is_recompute=True)
                     r_input = r_layer.attn_proj.forward(r_input, is_recompute=True)
 
         f_attn_pre_r_dispatch_sync_event = F_ATTN_PRE_R_DISPATCH_SYNC_EVENT if is_sync_1f1b else None
         if f_layer is not None:
-            with torch.no_grad(), f_layer.get_fp8_context():
+            with torch.no_grad(), f_layer.get_low_precision_context():
                 f_input = f_layer.attn_qkv.forward(
                     f_input,
                     stream_record_event=f_attn_pre_r_dispatch_sync_event,
@@ -840,7 +836,7 @@ class TransformerLayerSchedulePlanWithSplitAttn(_TransformerLayerSchedulePlanWit
 
         if r_layer is not None:
             with _fork_recompute_rng(r_layer_rng_states):
-                with torch.enable_grad(), r_layer.get_fp8_context():
+                with torch.enable_grad(), r_layer.get_low_precision_context():
                     r_input = r_layer.moe_dispatch.forward(
                         r_input,
                         stream_wait_event=f_attn_pre_r_dispatch_sync_event,
@@ -848,7 +844,7 @@ class TransformerLayerSchedulePlanWithSplitAttn(_TransformerLayerSchedulePlanWit
                     )
 
         if f_layer is not None:
-            with torch.no_grad(), f_layer.get_fp8_context():
+            with torch.no_grad(), f_layer.get_low_precision_context():
                 f_input = f_layer.core_attn.forward(f_input)
                 f_input = f_layer.attn_proj.forward(f_input)
 
@@ -856,7 +852,7 @@ class TransformerLayerSchedulePlanWithSplitAttn(_TransformerLayerSchedulePlanWit
             b_grad = b_layer.mlp.backward(b_grad)
 
         if f_layer is not None:
-            with torch.no_grad(), f_layer.get_fp8_context():
+            with torch.no_grad(), f_layer.get_low_precision_context():
                 f_input = f_layer.moe_dispatch.forward(f_input,)
 
         if b_layer is not None:
@@ -866,16 +862,16 @@ class TransformerLayerSchedulePlanWithSplitAttn(_TransformerLayerSchedulePlanWit
 
         if r_layer is not None:
             with _fork_recompute_rng(r_layer_rng_states):
-                with torch.enable_grad(), r_layer.get_fp8_context():
+                with torch.enable_grad(), r_layer.get_low_precision_context():
                     r_input = r_layer.mlp.forward(r_input, is_recompute=True)
 
         if f_layer is not None:
-            with torch.no_grad(), f_layer.get_fp8_context():
+            with torch.no_grad(), f_layer.get_low_precision_context():
                 f_input = f_layer.mlp.forward(f_input)
 
         if r_layer is not None:
             with _fork_recompute_rng(r_layer_rng_states):
-                with torch.enable_grad(), r_layer.get_fp8_context():
+                with torch.enable_grad(), r_layer.get_low_precision_context():
                     r_input = r_layer.moe_combine.forward(r_input, is_recompute=True)
                     r_input = r_layer.mtp_post_process.forward(r_input, is_recompute=True)
 
@@ -887,7 +883,7 @@ class TransformerLayerSchedulePlanWithSplitAttn(_TransformerLayerSchedulePlanWit
             )
 
         if f_layer is not None:
-            with torch.no_grad(), f_layer.get_fp8_context():
+            with torch.no_grad(), f_layer.get_low_precision_context():
                 f_input = f_layer.moe_combine.forward(
                     f_input,
                     stream_wait_event=b_attn_post_f_combine_sync_event,
@@ -898,7 +894,7 @@ class TransformerLayerSchedulePlanWithSplitAttn(_TransformerLayerSchedulePlanWit
             b_grad = b_layer.attn_qkv.backward(b_grad)
 
         if f_layer is not None:
-            with torch.no_grad(), f_layer.get_fp8_context():
+            with torch.no_grad(), f_layer.get_low_precision_context():
                 f_input = f_layer.mtp_post_process.forward(f_input)
 
         # Delay the last attn_dw in backward pass (attn_dw of the first layer)
@@ -968,7 +964,7 @@ class TransformerLayerSchedulePlanWithSplitAttn(_TransformerLayerSchedulePlanWit
         f_attn_pre_b_combine_sync_event = F_ATTN_PRE_B_COMBINE_SYNC_EVENT if is_sync_1f1b else None
         if r_or_f_layer is not None:
             with fork_recompute_rng(r_layer_rng_states):
-                with get_grad_context(r_layer is not None), r_or_f_layer.get_fp8_context():
+                with get_grad_context(r_layer is not None), r_or_f_layer.get_low_precision_context():
                     r_or_f_input = r_or_f_layer.attn_qkv.forward(
                         r_or_f_input,
                         stream_record_event=f_attn_pre_b_combine_sync_event,
@@ -983,7 +979,7 @@ class TransformerLayerSchedulePlanWithSplitAttn(_TransformerLayerSchedulePlanWit
 
         if r_or_f_layer is not None:
             with fork_recompute_rng(r_layer_rng_states):
-                with get_grad_context(r_layer is not None), r_or_f_layer.get_fp8_context():
+                with get_grad_context(r_layer is not None), r_or_f_layer.get_low_precision_context():
                     r_or_f_input = r_or_f_layer.core_attn.forward(r_or_f_input, is_recompute=r_layer is not None,)
                     r_or_f_input = r_or_f_layer.attn_proj.forward(r_or_f_input, is_recompute=r_layer is not None,)
 
@@ -992,7 +988,7 @@ class TransformerLayerSchedulePlanWithSplitAttn(_TransformerLayerSchedulePlanWit
 
         if r_or_f_layer is not None:
             with fork_recompute_rng(r_layer_rng_states):
-                with get_grad_context(r_layer is not None), r_or_f_layer.get_fp8_context():
+                with get_grad_context(r_layer is not None), r_or_f_layer.get_low_precision_context():
                     r_or_f_input = r_or_f_layer.moe_dispatch.forward(r_or_f_input, is_recompute=r_layer is not None,)
 
         if b_layer is not None:
@@ -1002,7 +998,7 @@ class TransformerLayerSchedulePlanWithSplitAttn(_TransformerLayerSchedulePlanWit
 
         if r_or_f_layer is not None:
             with fork_recompute_rng(r_layer_rng_states):
-                with get_grad_context(r_layer is not None), r_or_f_layer.get_fp8_context():
+                with get_grad_context(r_layer is not None), r_or_f_layer.get_low_precision_context():
                     r_or_f_input = r_or_f_layer.mlp.forward(r_or_f_input, is_recompute=r_layer is not None,)
 
         b_attn_post_f_combine_sync_event = B_ATTN_POST_F_COMBINE_SYNC_EVENT if is_sync_1f1b else None
@@ -1014,7 +1010,7 @@ class TransformerLayerSchedulePlanWithSplitAttn(_TransformerLayerSchedulePlanWit
 
         if r_or_f_layer is not None:
             with fork_recompute_rng(r_layer_rng_states):
-                with get_grad_context(r_layer is not None), r_or_f_layer.get_fp8_context():
+                with get_grad_context(r_layer is not None), r_or_f_layer.get_low_precision_context():
                     r_or_f_input = r_or_f_layer.moe_combine.forward(
                         r_or_f_input,
                         stream_wait_event=b_attn_post_f_combine_sync_event,
@@ -1027,7 +1023,7 @@ class TransformerLayerSchedulePlanWithSplitAttn(_TransformerLayerSchedulePlanWit
 
         if r_or_f_layer is not None:
             with fork_recompute_rng(r_layer_rng_states):
-                with get_grad_context(r_layer is not None), r_or_f_layer.get_fp8_context():
+                with get_grad_context(r_layer is not None), r_or_f_layer.get_low_precision_context():
                     r_or_f_input = r_or_f_layer.mtp_post_process.forward(r_or_f_input, is_recompute=r_layer is not None,)
 
         # Delay the last attn_dw in backward pass (attn_dw of the first layer)

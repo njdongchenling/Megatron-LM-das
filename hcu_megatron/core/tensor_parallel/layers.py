@@ -22,6 +22,7 @@ from megatron.core.parallel_state import (
     get_pipeline_model_parallel_rank,
     get_pipeline_model_parallel_world_size,
 )
+from megatron.core.process_groups_config import ProcessGroupCollection
 from megatron.core.utils import (
     get_pg_rank,
     get_pg_size,
@@ -146,6 +147,20 @@ class VocabParallelEmbedding:
                     set_tensor_model_parallel_attributes(
                         tensor=self.weight, is_parallel=True, dim=0, stride=1
                     )
+
+        self.gtp_remat_size = 1
+        gtp_remat_group = ProcessGroupCollection.use_mpu_process_groups(
+            required_pgs=["gtp_remat"]
+        ).gtp_remat
+        if gtp_remat_group is not None and gtp_remat_group.size() > 1:
+            from megatron.core.tensor_parallel.gtp_api import wrap_module_params_gtp
+
+            wrap_module_params_gtp(self, ["weight"], gtp_remat_group)
+            self.gtp_remat_size = gtp_remat_group.size()
+            # Nothing prefetches embedding — it is head of the UNGRAPHED
+            # chain in fwd, and its bwd bypasses all_gather_and_prefetch_bwd
+            # via GTPEmbeddingWeight.backward.
+            self.weight._need_weight_prefetch = False
 
 
 def get_tensor_model_parallel_node_size(group=None):

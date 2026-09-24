@@ -145,6 +145,7 @@ class MultiTokenPredictionLayer:
         hidden_states: Tensor,
         decoder_input: Tensor,
         attention_mask: Optional[Tensor] = None,
+        padding_mask: Optional[Tensor] = None,
         context: Optional[Tensor] = None,
         context_mask: Optional[Tensor] = None,
         rotary_pos_emb: Optional[Tensor] = None,
@@ -180,6 +181,7 @@ class MultiTokenPredictionLayer:
             hidden_states,
             decoder_input,
             attention_mask,
+            padding_mask,
             context,
             context_mask,
             rotary_pos_emb,
@@ -191,6 +193,7 @@ class MultiTokenPredictionLayer:
                 hidden_states=hidden_states,
                 decoder_input=decoder_input,
                 attention_mask=attention_mask,
+                padding_mask=padding_mask,
                 context=context,
                 context_mask=context_mask,
                 rotary_pos_emb=rotary_pos_emb,
@@ -237,6 +240,7 @@ class MultiTokenPredictionLayer:
                     hidden_states,
                     decoder_input,
                     attention_mask,
+                    padding_mask,
                     context,
                     context_mask,
                     rotary_pos_emb,
@@ -256,6 +260,7 @@ class MultiTokenPredictionLayer:
                     hidden_states,
                     decoder_input,
                     attention_mask,
+                    padding_mask,
                     context,
                     context_mask,
                     rotary_pos_emb,
@@ -286,6 +291,7 @@ class MultiTokenPredictionLayer:
                     hidden_states=hidden_states,
                     decoder_input=decoder_input,
                     attention_mask=attention_mask,
+                    padding_mask=padding_mask,
                     context=context,
                     context_mask=context_mask,
                     rotary_pos_emb=rotary_pos_emb,
@@ -305,6 +311,7 @@ class MultiTokenPredictionLayer:
                 hidden_states=hidden_states,
                 decoder_input=decoder_input,
                 attention_mask=attention_mask,
+                padding_mask=padding_mask,
                 context=context,
                 context_mask=context_mask,
                 rotary_pos_emb=rotary_pos_emb,
@@ -374,13 +381,17 @@ class MultiTokenPredictionBlock:
         offset = get_mtp_layer_offset(self.config, self.vp_stage)
         hidden_states_list = list(torch.chunk(hidden_states, 1 + offset, dim=0))
         hidden_states = hidden_states_list[offset]
+
+        if self.config.mtp_detach_heads:
+            hidden_states = hidden_states.detach()
+
         for iteration in range(self.config.mtp_num_layers):
             layer_idx = 0 if self.mtp_use_repeated_layer else iteration
             global_iteration = iteration + offset
             with _fork_recompute_mtp_layer_flag():
                 if get_args().recompute_mtp_layer_ids is not None:
                     set_recompute_mtp_layer_flag(global_iteration in get_args().recompute_mtp_layer_ids)
-                (hidden_states, input_ids, position_ids, padding_mask) = self.layers[layer_idx](
+                hidden_states, input_ids, position_ids, padding_mask = self.layers[layer_idx](
                     input_ids=input_ids,
                     position_ids=position_ids,
                     hidden_states=hidden_states,

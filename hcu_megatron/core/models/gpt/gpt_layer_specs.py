@@ -531,6 +531,10 @@ def get_gpt_decoder_layer_specs(
     pp_rank: Optional[int] = None,
 ) -> TransformerBlockSubmodules:
     """GPT block spec."""
+    assert config.experimental_attention_variant is None, (
+        "Experimental attention variant is not supported with get_gpt_decoder_layer_specs, "
+        f"but got {config.experimental_attention_variant=}."
+    )
 
     if use_transformer_engine:
         if get_adaptor_args().parallel_linear_impl == 'flux':
