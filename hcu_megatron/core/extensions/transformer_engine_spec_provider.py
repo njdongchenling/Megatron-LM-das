@@ -14,10 +14,10 @@ def te_spec_provider_grouped_mlp_modules_wrapper(fn):
         """Which module and submodules to use for grouped mlp"""
 
         if (
-            get_adaptor_args().use_primus_grouped_gemm
+            get_adaptor_args().use_turbo_grouped_gemm
             and moe_use_grouped_gemm
         ):
-            from hcu_megatron.core.transformer.moe.experts import PrimusTurboGroupedMLP
+            from hcu_megatron.core.transformer.moe.experts import PrimusGroupedMLP
 
             from hcu_megatron.core.extensions.primus_turbo import (
                 PrimusTurboColumnParallelGroupedLinear,
@@ -25,7 +25,7 @@ def te_spec_provider_grouped_mlp_modules_wrapper(fn):
             )
 
             return partial(
-                PrimusTurboGroupedMLP,
+                PrimusGroupedMLP,
                 submodules=GroupedMLPSubmodules(
                     linear_fc1=PrimusTurboColumnParallelGroupedLinear,
                     linear_fc2=PrimusTurboRowParallelGroupedLinear,

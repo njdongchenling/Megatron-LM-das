@@ -267,10 +267,10 @@ def validate_args_func_decorator(validate_args_func):
             if args.moe_token_dispatcher_type != "flex":
                 warn_rank_0(f"DeepEP backend is only supported with flex token dispatcher.")
                 args.moe_token_dispatcher_type = "flex"
-            assert args.use_primus_grouped_gemm, "--use-primus-grouped-gemm should be set when enabling sync free moe with deepep."
-            assert not args.use_primus_deepep, "--use-primus-deepep should NOT be set when enabling sync free moe with deepep."
+            assert args.use_turbo_grouped_gemm, "--use-turbo-grouped-gemm should be set when enabling sync free moe with deepep."
+            assert not args.use_turbo_deepep, "--use-turbo-deepep should NOT be set when enabling sync free moe with deepep."
 
-        if args.use_primus_deepep:
+        if args.use_turbo_deepep:
             assert HAVE_DEEP_EP, "DeepEP is not available"
             if args.moe_token_dispatcher_type != "flex":
                 warn_rank_0(f"Primus DeepEP backend is only supported with flex token dispatcher.")

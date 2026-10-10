@@ -92,7 +92,7 @@ class FullCudaGraphWrapper:
             capture_stream = get_shared_capture_stream()
 
             # CK descriptors are stream-scoped and must be prepared before capture.
-            if get_args().use_primus_grouped_gemm:
+            if get_args().use_turbo_grouped_gemm:
                 assert HAVE_TURBO, "primus_turbo.pytorch is NOT installed"
                 workspace_info = prepare_ck_grouped_gemm_workspace(stream=capture_stream)
                 logger.info(f"Prepared CK grouped-GEMM workspace on capture stream: {workspace_info}")

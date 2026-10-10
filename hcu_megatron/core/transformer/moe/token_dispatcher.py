@@ -79,7 +79,7 @@ class PrimusTurboDeepEPTokenDispatcher(MoETokenDispatcher):
                 # fully sync-free moe
                 permute_max_token_num = num_worst_tokens * config.moe_router_topk
 
-        use_turbo_grouped_gemm = args.use_primus_grouped_gemm
+        use_turbo_grouped_gemm = args.use_turbo_grouped_gemm
         assert primus_turbo_torch is not None, "Failed to import 'primus_turbo'. Please make sure it is installed."
         self.deepep_dispatcher = primus_turbo_torch.modules.DeepEPTokenDispatcher(
             num_experts=config.num_moe_experts,
