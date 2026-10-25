@@ -51,7 +51,7 @@ class PipelineFeature(AbstractFeature):
         group = parser.add_argument_group(title=self.feature_name)
         group.add_argument('--schedule-method', type=str,
                            default='vanilla',
-                           choices=['vanilla', 'dualpipev', 'seq1f1b', 'interleaved_seq1f1b', 'ripipe', 'zb_h1'],
+                           choices=['vanilla', 'dualpipev', 'ripipe', 'zb_h1'],
                            help='vanilla: use pipeline provided by megatron. '
                            'zb_h1: use ZB-H1 schedule.')
         # MoE communication overlap arguments
@@ -102,6 +102,19 @@ class PipelineFeature(AbstractFeature):
                            help='Global step to stop dumping pp schedule data.')
         group.add_argument('--dump-pp-data-dir', type=str, default=None,
                             help='Directory to write pp schedule data for visualization.')
+
+        # chunked pp
+        group.add_argument('--chunked-pipeline-model-parallel-splits', type=int, default=1,
+                           help='Number of splits in chunked pipeline model parallel.')
+        group.add_argument('--chunked-pipeline-model-parallel-split-lengths', nargs='+', type=int, default=None,
+                           help='[Experimental] Custom chunk lengths for chunked pipeline model parallel.'
+                           'If not set, the chunk lengths will be evenly distributed across all splits.'
+                           'Note: This is an experimental flag and may change in the future.')
+        group.add_argument('--moe-load-balancing-loss-mode-for-chunked-sequence', type=str,
+                           default="reduce",choices=["all_gather", "reduce"],
+                           help='Mode for applying load balancing loss for chunked sequence in MoE layer.'
+                           'all_gather: all-gather chunks before applying load balancing loss.'
+                           'reduce: reduce the loss across chunks.')
 
     def pre_validate_args(self, args):
         if args.schedule_method != "dualpipev":
@@ -387,15 +400,17 @@ class PipelineFeature(AbstractFeature):
                                     MoELayer.get_token_dispatcher,
                                     create_dummy=True)
         patch_manager.register_cls_funcs('megatron.core.transformer.moe.moe_layer.MoELayer',
-                                         [MoELayer.preprocess,
+                                         [MoELayer.combine,
                                           MoELayer.dispatch,
-                                          MoELayer.routed_experts_compute,
-                                          MoELayer.combine,
                                           MoELayer.postprocess,
+                                          MoELayer.preprocess,
+                                          MoELayer.route,
+                                          MoELayer.routed_experts_compute,
                                           MoELayer.router_and_preprocess])
         patch_manager.register_patch('megatron.core.transformer.multi_token_prediction.MultiTokenPredictionLayer.backward_dw',
                                     MultiTokenPredictionLayer.backward_dw,
                                     create_dummy=True)
+        # (1) dualpipev (2) chunked pp
         patch_manager.register_patch('megatron.core.transformer.multi_token_prediction.MultiTokenPredictionBlock.forward',
                                      MultiTokenPredictionBlock.forward)
         patch_manager.register_patch('megatron.core.transformer.multi_token_prediction.MultiTokenPredictionBlock.backward_dw',
@@ -414,15 +429,10 @@ class PipelineFeature(AbstractFeature):
                                           ScheduleNode._backward,
                                           ScheduleNode._release_state,])
 
-        # 1f1b without interleaving
-        if (
-            args.schedule_method == "vanilla"
-            and args.delay_1f1b_cooldown_wgrad_compute
-        ):
-            from hcu_megatron.core.pipeline_parallel.schedules import forward_backward_pipelining_without_interleaving
-
-            patch_manager.register_patch('megatron.core.pipeline_parallel.schedules.forward_backward_pipelining_without_interleaving',
-                                        forward_backward_pipelining_without_interleaving)
+        from hcu_megatron.core.pipeline_parallel.schedules import forward_backward_pipelining_without_interleaving
+        # (1) support splitting wgrad. (2) chunked pp
+        patch_manager.register_patch('megatron.core.pipeline_parallel.schedules.forward_backward_pipelining_without_interleaving',
+                                    forward_backward_pipelining_without_interleaving)
 
         if args.schedule_method == "zb_h1":
             from hcu_megatron.core.distributed.distributed_data_parallel import DistributedDataParallel
@@ -431,6 +441,7 @@ class PipelineFeature(AbstractFeature):
 
         if args.dump_pp_data:
             assert args.dump_pp_data_step_start < args.dump_pp_data_step_end
+
             from megatron.core.pipeline_parallel import schedules
             from hcu_megatron.core.pipeline_parallel.pp_data_collector import fwd_bwd_wrapper
 
@@ -441,3 +452,17 @@ class PipelineFeature(AbstractFeature):
                                         forward_step_func)
             patch_manager.register_patch('megatron.core.pipeline_parallel.schedules.backward_step',
                                         backward_step_func)
+
+        # chunked pp
+        from hcu_megatron.core.transformer.moe.router import (
+            topK_router_apply_aux_loss_wrapper,
+            topK_router_foward_wrapper,
+            topK_router_init_wrapper,
+        )
+
+        patch_manager.register_patch('megatron.core.transformer.moe.router.TopKRouter._apply_aux_loss',
+                                    topK_router_apply_aux_loss_wrapper)
+        patch_manager.register_patch('megatron.core.transformer.moe.router.TopKRouter.forward',
+                                    topK_router_foward_wrapper)
+        patch_manager.register_patch('megatron.core.transformer.moe.router.TopKRouter.__init__',
+                                    topK_router_init_wrapper)

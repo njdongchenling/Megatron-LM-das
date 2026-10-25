@@ -65,7 +65,7 @@ class MegatronBasicFeature(AbstractFeature):
             _ParamAndGradBucketGroup.start_grad_sync)
 
     def register_core_models_patches(self, patch_manager, args):
-        from hcu_megatron.core.models.gpt.gpt_model import gpt_model_postprocess, GPTModel
+        from hcu_megatron.core.models.gpt.gpt_model import GPTModel
         from hcu_megatron.core.models.common.embeddings.language_model_embedding import LanguageModelEmbedding
 
         # GPT Model
@@ -78,7 +78,7 @@ class MegatronBasicFeature(AbstractFeature):
 
         # support vocab parallel
         patch_manager.register_patch('megatron.core.models.gpt.gpt_model.GPTModel._postprocess',
-                                    gpt_model_postprocess)
+                                    GPTModel._postprocess)
 
         # Vocabulary parallelism
         patch_manager.register_patch('megatron.core.models.common.embeddings.language_model_embedding.LanguageModelEmbedding.__init__',
@@ -90,7 +90,6 @@ class MegatronBasicFeature(AbstractFeature):
                                     create_dummy=True)
 
     def register_core_transformers_patches(self, patch_manager, args):
-        from hcu_megatron.core.transformer.attention import attention_init_wrapper
         from hcu_megatron.core.transformer.moe.experts import TEGroupedMLP
         from hcu_megatron.core.transformer.moe.moe_layer import moe_layer_init_wrapper, moe_layer_forward_wrapper
         from hcu_megatron.core.transformer.transformer_config import (
@@ -116,10 +115,6 @@ class MegatronBasicFeature(AbstractFeature):
                                     get_inner_func(TEGroupedMLP.forward, "bias_act_func"),
                                     patch_inner_func=True,
                                     inner_func_name="bias_act_func",)
-        # (1) cpu offload. (2) seq1f1b
-        patch_manager.register_patch('megatron.core.transformer.attention.Attention.__init__',
-                                    attention_init_wrapper,
-                                    apply_wrapper=True)
 
         from hcu_megatron.core.recompute import checkpointed_forward
         from hcu_megatron.core.transformer.attention import Attention
@@ -132,11 +127,18 @@ class MegatronBasicFeature(AbstractFeature):
                                     checkpointed_forward)
         patch_manager.register_patch('megatron.core.transformer.transformer_block.TransformerBlock.forward',
                                     TransformerBlock.forward)
-        patch_manager.register_patch('megatron.core.transformer.transformer_layer.TransformerLayer._forward_attention',
-                                    TransformerLayer._forward_attention)
-        # support recompute_mtp_layer_ids
-        patch_manager.register_patch('megatron.core.transformer.multi_token_prediction.MultiTokenPredictionLayer._checkpointed_forward',
-                                    MultiTokenPredictionLayer._checkpointed_forward)
+        # chunked pp
+        patch_manager.register_cls_funcs('megatron.core.transformer.transformer_layer.TransformerLayer._forward_attention',
+                                    [TransformerLayer._forward_attention,
+                                     TransformerLayer._forward_mlp,
+                                     TransformerLayer._te_cuda_graph_replay,
+                                     TransformerLayer.forward])
+        # (1) recompute_mtp_layer_ids. (2) chunked pp
+        patch_manager.register_cls_funcs('megatron.core.transformer.multi_token_prediction.MultiTokenPredictionLayer',
+                                    [MultiTokenPredictionLayer._checkpointed_forward,
+                                     MultiTokenPredictionLayer._get_embeddings,
+                                     MultiTokenPredictionLayer._proj_and_transformer_layer,
+                                     MultiTokenPredictionLayer.forward])
 
         patch_manager.register_patch('megatron.core.transformer.attention.Attention.forward',
                                     Attention.forward)

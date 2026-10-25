@@ -4,10 +4,19 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 ###############################################################################
-from typing import Tuple
+from functools import wraps
+from typing import Optional, Tuple
 
 import torch
-from megatron.core.transformer.moe.moe_utils import apply_router_token_dropping
+
+from megatron.core.transformer.moe.moe_utils import (
+    apply_router_token_dropping,
+    ProcessGroupCollection,
+)
+from megatron.core.transformer.transformer_config import TransformerConfig
+
+from hcu_megatron.core.cached_prefix_utils import CachedPrefixParams
+from hcu_megatron.core.transformer.moe.moe_utils import MoERouterScoreCache
 
 
 class PrimusTopKRouter():
@@ -67,3 +76,78 @@ class PrimusTopKRouter():
         self._apply_expert_bias(routing_map)
 
         return probs, routing_map
+
+
+def topK_router_init_wrapper(fn):
+    @wraps(fn)
+    def wrapper(
+        self,
+        config: TransformerConfig,
+        pg_collection: Optional[ProcessGroupCollection] = None,
+        is_mtp_layer: bool = False,
+    ):
+
+        fn(
+            self,
+            config,
+            pg_collection=pg_collection,
+            is_mtp_layer=is_mtp_layer,
+        )
+        self.cached_prefix_params = None
+
+    return wrapper
+
+
+def topK_router_apply_aux_loss_wrapper(fn):
+    @wraps(fn)
+    def wrapper(
+        self,
+        probs: torch.Tensor,
+        scores_for_aux_loss: torch.Tensor,
+        routing_map: torch.Tensor,
+        with_padding_mask: bool = False,
+    ):
+        if self.cached_prefix_params is not None:
+            kv_cache = self.cached_prefix_params.kv_cache_pool.get_kv_cache(
+                layer_idx=self.layer_number, kv_cache_cls=MoERouterScoreCache
+            )
+            probs = kv_cache.apply_aux_loss(
+                router=self,
+                cached_prefix_params=self.cached_prefix_params,
+                probs=probs,
+                scores_for_aux_loss=scores_for_aux_loss,
+                routing_map_for_aux_loss=routing_map,
+                with_padding_mask=with_padding_mask,
+            )
+            # TODO(yuzhongw): only support aux_loss now. Add support for seq_aux_loss and global_aux_loss in the future.
+            return probs
+
+        return fn(
+            self,
+            probs,
+            scores_for_aux_loss,
+            routing_map,
+            with_padding_mask,
+        )
+
+    return wrapper
+
+
+def topK_router_foward_wrapper(fn):
+    @wraps(fn)
+    def wrapper(
+        self,
+        input: torch.Tensor,
+        padding_mask: Optional[torch.Tensor] = None,
+        cached_prefix_params: Optional[CachedPrefixParams] = None,
+    ):
+        # cached_prefix_params will be used by _apply_aux_loss
+        self.cached_prefix_params = cached_prefix_params
+
+        return fn(
+            self,
+            input,
+            padding_mask=padding_mask,
+        )
+
+    return wrapper

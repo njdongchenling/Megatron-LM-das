@@ -37,7 +37,6 @@ def checkpointed_forward(
     padding_mask: Optional[Tensor] = None,
     extract_layer_indices: Optional[Set[int]] = None,
     layer_offset: int = 0,
-    micro_sp_idx=None,
 ) -> Union[Tensor, Tuple[Tensor, Tensor]]:
     """Forward method with activation checkpointing.
 
@@ -71,7 +70,6 @@ def checkpointed_forward(
             rotary_pos_emb_local,
             rotary_pos_emb_global,
             padding_mask=None,
-            micro_sp_idx_=None,
         ):
             rotary_pos_emb = (
                 (rotary_pos_emb_local, rotary_pos_emb_global)
@@ -116,7 +114,7 @@ def checkpointed_forward(
                 )
                 with inner_quantization_context:
                     if isinstance(layer, TransformerLayer):
-                        hidden_states, context = layer(**layer_kwargs, micro_sp_idx=micro_sp_idx_,)
+                        hidden_states, context = layer(**layer_kwargs)
                     else:  # MambaLayer (HybridStack `M` slot)
                         for k in ("context", "context_mask", "attention_bias", "padding_mask"):
                             layer_kwargs.pop(k, None)
@@ -147,15 +145,12 @@ def checkpointed_forward(
                     *args,
                 )
             else:
-                micro_sp_idx_ = None if micro_sp_idx is None else torch.tensor([micro_sp_idx], device='cuda', dtype=torch.int32)
-                args = args + (micro_sp_idx_,)
                 hidden_states, context = tensor_parallel.checkpoint(
                     cf, self.config.distribute_saved_activations, *args
                 )
         else:
             # Note: original block-branch no-checkpoint path omitted padding_mask
             # (relied on its default=None); restored here for consistency.
-            args = args + (micro_sp_idx_,)
             hidden_states, context = cf(*args)
 
         if self.config.recompute_method == "uniform":

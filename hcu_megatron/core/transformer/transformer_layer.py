@@ -1,7 +1,7 @@
 # Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 Hygon Information Technology Co., Ltd.
-from typing import Any, Optional, TYPE_CHECKING, Dict, Union
+from typing import TYPE_CHECKING, Any, Optional, Dict, Union
 from functools import wraps
 from dataclasses import dataclass, field
 
@@ -15,13 +15,14 @@ from megatron.core.inference.utils import InferenceMode
 from megatron.core.packed_seq_params import PackedSeqParams
 from megatron.core.process_groups_config import ProcessGroupCollection
 from megatron.core.transformer.cuda_graphs import is_graph_capturing
-from megatron.core.transformer.transformer_config import TransformerConfig
-from megatron.core.transformer.spec_utils import ModuleSpec, build_module
-from megatron.core.transformer.torch_norm import LayerNormBuilder
+from megatron.core.transformer.enums import CudaGraphModule
 from megatron.core.transformer.identity_op import IdentityFuncOp, IdentityOp
 from megatron.core.transformer.module import GraphableMegatronModule
+from megatron.core.transformer.spec_utils import ModuleSpec, build_module
+from megatron.core.transformer.torch_norm import LayerNormBuilder
+from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.core.transformer.transformer_layer import TransformerLayer as MegatronCoreTransformerLayer
-from megatron.core.typed_torch import apply_module
+from megatron.core.typed_torch import apply_module, copy_signature
 
 from megatron.core.utils import (
     deprecate_inference_params,
@@ -29,6 +30,11 @@ from megatron.core.utils import (
     nvtx_range_pop,
     nvtx_range_push,
 )
+
+if TYPE_CHECKING:
+    from megatron.core.inference.contexts import BaseInferenceContext
+
+from hcu_megatron.core.cached_prefix_utils import CachedPrefixParams
 from hcu_megatron.core.tensor_parallel.random import CheckpointManager
 from hcu_megatron.training import get_args
 
@@ -264,9 +270,9 @@ class TransformerLayer():
         packed_seq_params: Optional[PackedSeqParams] = None,
         sequence_len_offset: Optional[Tensor] = None,
         padding_mask: Optional[Tensor] = None,
+        cached_prefix_params: Optional[CachedPrefixParams] = None,
         *,
         inference_params: Optional[Any] = None,
-        micro_sp_idx=None,
     ):
         """
         Perform a forward pass through the attention layer and the layernorms before and after
@@ -288,6 +294,7 @@ class TransformerLayer():
             packed_seq_params (object, optional): Parameters for packed sequence processing.
             sequence_len_offset (Tensor, optional): Offset along sequence dimension
                 during inference.
+            cached_prefix_params (object, optional): Parameters for prefix caching.
 
         Returns:
             Tuple[Tensor, Tensor]: A tuple containing:
@@ -334,33 +341,19 @@ class TransformerLayer():
 
         # Self attention.
         nvtx_range_push(suffix="self_attention")
-        if micro_sp_idx is not None:
-            attention_output_with_bias = self.self_attention(
-                input_layernorm_output,
-                attention_mask=attention_mask,
-                inference_context=inference_context,
-                rotary_pos_emb=rotary_pos_emb,
-                rotary_pos_cos=rotary_pos_cos,
-                rotary_pos_sin=rotary_pos_sin,
-                rotary_pos_cos_sin=rotary_pos_cos_sin,
-                attention_bias=attention_bias,
-                packed_seq_params=packed_seq_params,
-                sequence_len_offset=sequence_len_offset,
-                micro_sp_idx=micro_sp_idx,
-            )
-        else:
-            attention_output_with_bias = self.self_attention(
-                input_layernorm_output,
-                attention_mask=attention_mask,
-                inference_context=inference_context,
-                rotary_pos_emb=rotary_pos_emb,
-                rotary_pos_cos=rotary_pos_cos,
-                rotary_pos_sin=rotary_pos_sin,
-                rotary_pos_cos_sin=rotary_pos_cos_sin,
-                attention_bias=attention_bias,
-                packed_seq_params=packed_seq_params,
-                sequence_len_offset=sequence_len_offset,
-            )
+        attention_output_with_bias = self.self_attention(
+            input_layernorm_output,
+            attention_mask=attention_mask,
+            inference_context=inference_context,
+            rotary_pos_emb=rotary_pos_emb,
+            rotary_pos_cos=rotary_pos_cos,
+            rotary_pos_sin=rotary_pos_sin,
+            rotary_pos_cos_sin=rotary_pos_cos_sin,
+            attention_bias=attention_bias,
+            packed_seq_params=packed_seq_params,
+            sequence_len_offset=sequence_len_offset,
+            cached_prefix_params=cached_prefix_params,
+        )
         nvtx_range_pop(suffix="self_attention")
 
         if self.recompute_input_layernorm:
@@ -427,6 +420,211 @@ class TransformerLayer():
             )
 
         return hidden_states, context
+
+    @copy_signature(_forward_attention)
+    def forward(self, *args, **kwargs):
+        """
+        Perform a forward pass through the transformer layer.
+
+        This method calls the core computation of a transformer layer, including
+        self-attention, cross-attention (if applicable), and feed-forward operations.
+        """
+        hidden_states, context = self._forward_attention(*args, **kwargs)
+        output = self._forward_mlp(
+            hidden_states,
+            kwargs.get("inference_context", None),
+            padding_mask=kwargs.get("padding_mask", None),
+            packed_seq_params=kwargs.get("packed_seq_params", None),
+            cached_prefix_params=kwargs.get("cached_prefix_params", None),
+        )
+        return output, context
+
+    def _forward_mlp(
+        self,
+        hidden_states: Tensor,
+        inference_context: BaseInferenceContext | None = None,
+        padding_mask: Tensor | None = None,
+        packed_seq_params=None,
+        cached_prefix_params=None,
+    ) -> Tensor | list[Tensor | None]:
+        """
+        Perform a forward pass through the feed-forward layer.
+
+        Args:
+            hidden_states (Tensor): Transformed hidden states before the MLP layernorm.
+                Shape [seq_length, batch_size, hidden_size].
+            inference_context: Inference context for optimizations.
+            padding_mask (Tensor, optional): Padding mask for MoE routing.
+                Shape [bsz, seq_length]. True = padding (exclude), False = valid (include).
+                Only used for MoE layers to exclude padding tokens from aux loss computations.
+                The MoELayer will internally transform this to [seq_length, bsz] format.
+            packed_seq_params: Packed sequence parameters, used to detect flattened
+                batches that need reshaping for MoE sequence load balancing.
+            cached_prefix_params (CachedPrefixParams, optional): Cached prefix parameters.
+        Returns:
+            output (Tensor): Transformed hidden states of shape [s, b, h].
+        """
+
+        # Optional Layer norm post the cross-attention.
+        pre_mlp_layernorm_output = self._forward_pre_mlp_layernorm(hidden_states)
+
+        if isinstance(pre_mlp_layernorm_output, tuple):
+            if len(pre_mlp_layernorm_output) != 2:
+                raise ValueError(
+                    f"When the output of pre_mlp_layernorm is a tuple, it is "
+                    f"expected to have 2 elements (output, residual), but "
+                    f"got {len(pre_mlp_layernorm_output)}"
+                )
+            pre_mlp_layernorm_output, residual = pre_mlp_layernorm_output
+        else:
+            # Residual connection.
+            residual = hidden_states
+
+        if self.config.fp32_residual_connection:
+            residual = residual.float()
+
+        pre_mlp_layernorm_output, padding_mask, moe_unflatten_mbs = self._maybe_unflatten_for_moe(
+            pre_mlp_layernorm_output, padding_mask, packed_seq_params
+        )
+
+        nvtx_range_push(suffix="mlp")
+        # Potentially chunk the MLP computation during prefill to minimize the peak activation size
+        should_chunk_mlp_for_prefill = (
+            self.config.mlp_chunks_for_prefill > 1
+            and inference_context is not None
+            and not inference_context.is_decode_only()
+            and not isinstance(self.mlp, IdentityOp)
+            and not self.config.transformer_impl == "inference_optimized"
+        )
+        should_chunk_mlp_for_training = (
+            self.config.mlp_chunks_for_training > 1
+            and inference_context is None
+            and self.training
+            and not isinstance(self.mlp, IdentityOp)
+        )
+
+        using_fused_tp_inference_kernel = (
+            InferenceMode.is_active() and self.config.inference_fuse_tp_communication
+        )
+
+        if self.recompute_mlp:
+            if self.config.fp8 or self.config.fp4:
+                # import here to avoid circular import
+                from megatron.core.extensions.transformer_engine import te_checkpoint
+
+                mlp_output_with_bias = te_checkpoint(
+                    apply_module(self.mlp),
+                    False,
+                    tensor_parallel.random.get_cuda_rng_tracker,
+                    self.pg_collection.tp,
+                    pre_mlp_layernorm_output,
+                    padding_mask=padding_mask,
+                )
+            else:
+                mlp_output_with_bias = tensor_parallel.checkpoint(
+                    functools.partial(apply_module(self.mlp), padding_mask=padding_mask),
+                    False,
+                    pre_mlp_layernorm_output,
+                    cached_prefix_params=cached_prefix_params,
+                )
+        elif should_chunk_mlp_for_prefill or should_chunk_mlp_for_training:
+            assert (
+                cached_prefix_params is None
+            ), "Cached prefix parameters are not supported for chunk MLP for prefill."
+
+            # Chunk input along sequence dimension
+            num_chunks = min(
+                (
+                    self.config.mlp_chunks_for_prefill
+                    if should_chunk_mlp_for_prefill
+                    else self.config.mlp_chunks_for_training
+                ),
+                pre_mlp_layernorm_output.shape[0],
+            )
+
+            chunks = pre_mlp_layernorm_output.chunk(num_chunks, dim=0)
+
+            # Compute outputs for each chunk
+            outputs = [apply_module(self.mlp)(chunk) for chunk in chunks]
+
+            # Aggregate chunk outputs
+            mlp_output = torch.cat([out for out, _ in outputs], dim=0)
+            bias_chunks = [bias for _, bias in outputs if bias is not None]
+            # elements in bias_chunks are the same for all chunks, so we can just use the first one
+            bias_output = bias_chunks[0] if bias_chunks else None
+            mlp_output_with_bias = (mlp_output, bias_output)
+        else:
+            if using_fused_tp_inference_kernel:
+                # Set the residual for fused reduce-scatter + add + layer-norm + all-gather
+                # operation in MLP's fc2.
+                self._set_fc2_residual(residual)
+            mlp_output_with_bias = apply_module(self.mlp)(
+                pre_mlp_layernorm_output,
+                padding_mask=padding_mask,
+                cached_prefix_params=cached_prefix_params,
+            )
+
+        if moe_unflatten_mbs is not None:
+            mlp_output, mlp_bias = mlp_output_with_bias
+            mlp_output = self._maybe_reflatten_from_moe(
+                mlp_output, packed_seq_params, moe_unflatten_mbs
+            )
+            mlp_output_with_bias = (mlp_output, mlp_bias)
+
+        nvtx_range_pop(suffix="mlp")
+
+        if (
+            self.is_moe_layer
+            and self.config.cuda_graph_impl == "transformer_engine"
+            and self.training
+            and is_graph_capturing()
+            and CudaGraphModule.moe_router in self.config.cuda_graph_modules
+        ):
+            if self.recompute_pre_mlp_layernorm:
+                # Register the recompute hooks to all the cudagraph output tensors, because some
+                # tensors are in parallel execution paths and they all need pre_mlp_layernorm to be
+                # recomputed in backward pass. For example, the router path and the shared expert
+                # path. So only register in one path is risky.
+                for tensor in mlp_output_with_bias:
+                    self.pre_mlp_norm_checkpoint.discard_output_and_register_recompute(tensor)
+            return list(mlp_output_with_bias) + [residual]
+        else:
+            return self._forward_post_mlp(mlp_output_with_bias, residual)
+
+    def _te_cuda_graph_replay(self, *args, **kwargs):
+        """
+        CUDA graph replay for this layer and microbatch `self.current_microbatch` using TE
+        interface. TransformerEngine versions>=1.10 allow keyword arguments with CUDA graph.
+        However, CUDA graph accepts only Tensor inputs.
+        Hence, `inference_context` and `packed_seq_params` are excluded from input list.
+        """
+        context = None
+        if (
+            self.config.cuda_graph_modules
+            and CudaGraphModule.attn not in self.config.cuda_graph_modules
+        ):
+            hidden_states, context = self._forward_attention(*args, **kwargs)
+            args = (hidden_states,)
+            kwargs = {}
+
+        assert (
+            (kwargs.get('inference_context') is None)
+            and (kwargs.get('packed_seq_params') is None)
+            and (kwargs.get('cached_prefix_params') is None)
+        ), (
+            "CUDA graph accepts only Tensor inputs. "
+            "inference_context, packed_seq_params and cached_prefix_params are excluded from "
+            "input list. For inference cuda graph, please use cuda_graph_impl=local instead."
+        )
+
+        if self.config.delay_offload_until_cuda_graph:
+            self.off_interface.enter_replay()
+
+        try:
+            return self._te_cuda_graph_replay_impl(args, kwargs, context)
+        finally:
+            if self.config.delay_offload_until_cuda_graph:
+                self.off_interface.exit_replay()
 
     def backward_dw(self):
         self.self_attention.backward_dw()
@@ -599,7 +797,6 @@ class HyperConnectionTransformerLayer(MegatronCoreTransformerLayer):
         mhc_recompute_manager: Optional['CheckpointManager'] = None,
         *,
         inference_params: Optional[Any] = None,
-        micro_sp_idx=None,
     ):
         """Forward attention with hyper connection pre/post processing on self-attention."""
         inference_context = deprecate_inference_params(inference_context, inference_params)

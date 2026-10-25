@@ -261,6 +261,52 @@ def transformer_config_post_init_wrapper(post_init_func):
         ):
             self.recompute_granularity = "full"
 
+        # Chunked PP
+        if self.recompute_granularity == "selective":
+            if "moe" in self.recompute_modules:
+                assert self.moe_load_balancing_loss_mode_for_chunked_sequence == "reduce", (
+                    f"moe recompute only supports load balancing loss mode 'reduce' for chunked "
+                    f"sequence, but got {self.moe_load_balancing_loss_mode_for_chunked_sequence}."
+                )
+
+        if self.fine_grained_activation_offloading:
+            if "core_attn" in self.offload_modules:
+                assert self.chunked_pipeline_model_parallel_splits == 1, (
+                    "Core attention offloading is not supported with chunked PP, "
+                    f"but got {self.offload_modules=}."
+                )
+
+        if self.chunked_pipeline_model_parallel_splits > 1:
+            if self.chunked_pipeline_model_parallel_split_lengths is not None:
+                assert (
+                    len(self.chunked_pipeline_model_parallel_split_lengths)
+                    == self.chunked_pipeline_model_parallel_splits
+                ), (
+                    f"{self.chunked_pipeline_model_parallel_split_lengths=} "
+                    f"must be a list of length {self.chunked_pipeline_model_parallel_splits}."
+                )
+            # The sequence lengths vary across chunks, so we need to disable
+            # batch P2P comm and enable variable sequence lengths.
+            self.batch_p2p_comm = False
+            self.variable_seq_lengths = True
+
+        if self.chunked_pipeline_model_parallel_splits > 1:
+            assert (
+                not self.overlap_moe_expert_parallel_comm
+            ), f"Chunked PP does not support A2A overlap for now."
+            if self.virtual_pipeline_model_parallel_size is not None:
+                assert (
+                    self.pipeline_model_parallel_size >= self.chunked_pipeline_model_parallel_splits
+                ), (
+                    f"For VPP > 1, expect PP size >= chunked PP splits, but got "
+                    f"{self.virtual_pipeline_model_parallel_size=}, "
+                    f"{self.pipeline_model_parallel_size=}, "
+                    f"and {self.chunked_pipeline_model_parallel_splits=}."
+                )
+            assert (
+                self.recompute_granularity != "full"
+            ), "Chunked PP does not support full recompute granularity for now."
+
     return wrapper
 
 

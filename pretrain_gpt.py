@@ -127,7 +127,13 @@ def get_batch(data_iterator, vp_stage: Optional[int] = None, microbatch_id=None)
         and not mtp_on_this_rank
         and not has_cu_seqlens
     ):
-        return [None for _ in BATCH_KEYS]
+        if config.chunked_pipeline_model_parallel_splits > 1:
+            # The inner data iterator is None, so we need to mock the next batch.
+            data_iterator.mock_next(args.seq_length)
+            cached_prefix_params = data_iterator.get_current_cached_prefix_params()
+        else:
+            cached_prefix_params = None
+        return [None for _ in BATCH_KEYS] + [cached_prefix_params,]
 
     if (
         not args.enable_vocab_parallel
@@ -150,6 +156,15 @@ def get_batch(data_iterator, vp_stage: Optional[int] = None, microbatch_id=None)
                 else None
             )
 
+    if config.chunked_pipeline_model_parallel_splits > 1:
+        # The inner data iterator is None, so we need to mock the next batch.
+        data_iterator.mock_next(args.seq_length)
+        cached_prefix_params = data_iterator.get_current_cached_prefix_params()
+        seq_length = cached_prefix_params.this_chunk_seqlen
+    else:
+        cached_prefix_params = None
+        seq_length = args.seq_length
+
     batch = get_batch_on_this_tp_rank(
         batch,
         broadcast_src_rank=mpu.get_tensor_model_parallel_src_rank(),
@@ -160,7 +175,7 @@ def get_batch(data_iterator, vp_stage: Optional[int] = None, microbatch_id=None)
         cp_size=cp_size,
         tp_rank=tp_rank,
         micro_batch_size=args.micro_batch_size,
-        seq_length=args.seq_length,
+        seq_length=seq_length,
         mtp_on_this_rank=mtp_on_this_rank,
         pipeline_model_parallel_size=args.pipeline_model_parallel_size,
         is_pipeline_first_stage=mpu.is_pipeline_first_stage(),
@@ -198,7 +213,7 @@ def get_batch(data_iterator, vp_stage: Optional[int] = None, microbatch_id=None)
     # BATCH_KEYS entry on tp_rank 0; other tp_ranks receive a fresh dict from
     # get_batch_on_this_tp_rank. BATCH_KEYS is already alphabetical, matching
     # the historical sorted(batch.keys()) order.
-    batch_data = [batch[key] for key in BATCH_KEYS]
+    batch_data = [batch[key] for key in BATCH_KEYS] + [cached_prefix_params,]
     if args.enable_vocab_parallel and (get_virtual_vocab_parallel_chunk() == embedding_model_chunk_id):
         InputStore.save_batch(microbatch_id, tuple(batch_data))
 
@@ -329,6 +344,7 @@ def forward_step(data_iterator, model: GPTModel, return_schedule_plan: bool = Fa
             max_seqlen,
             position_ids,
             tokens,
+            cached_prefix_params,
         ) = get_batch(data_iterator, vp_stage, microbatch_id=microbatch_id)
 
     packed_seq_params = None
@@ -376,6 +392,7 @@ def forward_step(data_iterator, model: GPTModel, return_schedule_plan: bool = Fa
                 labels=labels,
                 loss_mask=loss_mask,
                 packed_seq_params=packed_seq_params,
+                cached_prefix_params=cached_prefix_params,
             )
 
     # [ModelOpt]: model is needed to access ModelOpt distillation losses

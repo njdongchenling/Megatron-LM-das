@@ -33,10 +33,12 @@ def multi_latent_attention_forward_wrapper(func):
         packed_seq_params=None,
         position_ids=None,
         sequence_len_offset=None,
+        cached_prefix_params=None,  # support prefix caching for MLA
         *,
         inference_params=None,
-        micro_sp_idx=None,  # pylint: disable=unused-argument
     ):
+        assert cached_prefix_params is None, "Prefix caching is not supported for MLA."
+
         return func(
             self,
             hidden_states,

@@ -35,6 +35,8 @@ from megatron.core.transformer.transformer_layer import (
     get_transformer_layer_offset,
 )
 from megatron.core.typed_torch import apply_module
+
+from hcu_megatron.core.cached_prefix_utils import CachedPrefixParams
 from hcu_megatron.core.transformer.hyper_connection import HyperConnectionModule
 from hcu_megatron.core.tensor_parallel.random import CheckpointManager
 
@@ -211,10 +213,10 @@ class TransformerBlock(MegatronCoreTransformerBlock):
         sequence_len_offset: Optional[Tensor] = None,
         padding_mask: Optional[Tensor] = None,
         extract_layer_indices: Optional[Set[int]] = None,
+        cached_prefix_params: Optional[CachedPrefixParams] = None,
         *,
         inference_params: Optional[BaseInferenceContext] = None,
         dynamic_inference_decode_only: Optional[bool] = None,
-        micro_sp_idx=None,
     ):
         """
         Perform the forward pass through the transformer block.
@@ -248,6 +250,7 @@ class TransformerBlock(MegatronCoreTransformerBlock):
                 which to extract intermediate hidden states. If
                 non-empty, the forward pass will collect hidden_states
                 after each specified layer.
+            cached_prefix_params (CachedPrefixParams, optional): Parameters for prefix caching.
             dynamic_inference_decode_only: Optional[bool]: If true, indicates that the current
                 inference context is for decode-only. This args is only used to uniquely
                 identify decode and non-decode cuda graph runners in the cuda graph manager.
@@ -352,6 +355,9 @@ class TransformerBlock(MegatronCoreTransformerBlock):
         with rng_context, outer_quantization_context:
             # Forward pass.
             if self.config.recompute_granularity == 'full' and self.training:
+                assert (
+                    cached_prefix_params is None
+                ), "Prefix caching is not supported with recompute for now."
                 checkpointed_result = checkpointed_forward(
                     self,
                     hidden_states=hidden_states,
@@ -365,7 +371,6 @@ class TransformerBlock(MegatronCoreTransformerBlock):
                     padding_mask=padding_mask,
                     extract_layer_indices=extract_layer_indices,
                     layer_offset=layer_offset,
-                    micro_sp_idx=micro_sp_idx,
                 )
                 # Handle return value from _checkpointed_forward
                 if len(extract_layer_indices) > 0:
@@ -412,8 +417,8 @@ class TransformerBlock(MegatronCoreTransformerBlock):
                                 packed_seq_params=packed_seq_params,
                                 sequence_len_offset=sequence_len_offset,
                                 padding_mask=padding_mask,
+                                cached_prefix_params=cached_prefix_params,
                                 mhc_recompute_manager=mhc_manager,
-                                micro_sp_idx=micro_sp_idx,
                             )
                     else:
                         with self.offload_context, inner_quantization_context:
@@ -431,7 +436,7 @@ class TransformerBlock(MegatronCoreTransformerBlock):
                                 packed_seq_params=packed_seq_params,
                                 sequence_len_offset=sequence_len_offset,
                                 padding_mask=padding_mask,
-                                micro_sp_idx=micro_sp_idx,
+                                cached_prefix_params=cached_prefix_params,
                             )
 
                     if use_mhc_recompute:

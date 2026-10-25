@@ -64,18 +64,6 @@ authors and preserves their licenses in accordance with the terms below.
 - Hygon modifications: integration with `hcu_megatron.core.parallel_state` and the
   DualpipeV pipeline-parallel schedules.
 
-## Seq1F1B
-
-- Source: https://github.com/MayDomine/Seq1F1B
-- License: Apache License, Version 2.0
-- Usage: the sequence-parallel 1F1B pipeline schedule implementation is adopted from
-  Seq1F1B. Attributed files include:
-  - `hcu_megatron/core/pipeline_parallel/seq1f1b/schedules.py`
-  - `hcu_megatron/core/pipeline_parallel/seq1f1b/split_solver.py`
-  - `hcu_megatron/core/pipeline_parallel/seq1f1b/sp_utils.py`
-- Hygon modifications: integration with Megatron-LM P2P communication primitives and
-  the HCU platform.
-
 ## Primus (AMD-AGI)
 
 - Source: https://github.com/AMD-AGI/Primus

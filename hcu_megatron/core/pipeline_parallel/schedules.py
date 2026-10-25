@@ -10,6 +10,10 @@ from functools import partial
 from typing import Callable, Iterator, List, Optional, Union
 
 from megatron.core import parallel_state
+from megatron.core.pipeline_parallel.chunked_pipeline_parallel_utils import (
+    ChunkedPipelineParallelDataIterator,
+    ChunkedPipelineParallelQueue,
+)
 from megatron.core.pipeline_parallel.fine_grained_activation_offload import (
     FineGrainedActivationOffloadingInterface as off_interface,
 )
@@ -50,7 +54,6 @@ from megatron.core.utils import (
 )
 
 from .ripipe_schedules import forward_backward_ripipe_pipelining
-from .seq1f1b.schedules import seq1f1b_forward_backward_pipelining_without_interleaving, seq1f1b_forward_backward_pipelining_with_interleaving
 from hcu_megatron.core.pipeline_parallel.pp_data_collector import schedule_wrapper
 from hcu_megatron.core.pipeline_parallel.schedule_timers import ScheduleTimers
 
@@ -87,10 +90,6 @@ def get_forward_backward_func_wrapper(fn):
             else:
                 from .dualpipev.dualpipev_schedules import forward_backward_pipelining_with_cutinhalf
             forward_backward_func = forward_backward_pipelining_with_cutinhalf
-        elif args.schedule_method == "seq1f1b":
-            forward_backward_func = seq1f1b_forward_backward_pipelining_without_interleaving
-        elif args.schedule_method == "interleaved_seq1f1b":
-            forward_backward_func = seq1f1b_forward_backward_pipelining_with_interleaving
         elif args.schedule_method == "ripipe":
             forward_backward_func = forward_backward_ripipe_pipelining
         elif args.schedule_method == "zb_h1":
@@ -553,6 +552,9 @@ def forward_backward_pipelining_without_interleaving(
             "Non-interleaved pipeline parallelism does not support overlapping p2p communication"
         )
 
+    if config.chunked_pipeline_model_parallel_splits > 1:
+        data_iterator = ChunkedPipelineParallelDataIterator(data_iterator, config)
+
     tp_group, cp_group, cp_size = None, None, None
 
     # Determine if this is a multi-module pipeline
@@ -638,6 +640,8 @@ def forward_backward_pipelining_without_interleaving(
 
     # Compute number of warmup microbatches.
     num_warmup_microbatches = p2p_communicator.total_stages - p2p_communicator.current_stage - 1
+    num_warmup_microbatches += (config.chunked_pipeline_model_parallel_splits - 1)
+    num_microbatches *= config.chunked_pipeline_model_parallel_splits
     num_warmup_microbatches = min(num_warmup_microbatches, num_microbatches)
     num_microbatches_remaining = num_microbatches - num_warmup_microbatches
 
@@ -693,8 +697,16 @@ def forward_backward_pipelining_without_interleaving(
     total_num_tokens = torch.zeros([], dtype=torch.int, device="cuda")
 
     if not forward_only:
-        input_tensors = []
-        output_tensors = []
+        if config.chunked_pipeline_model_parallel_splits > 1:
+            input_tensors = ChunkedPipelineParallelQueue(
+                config.chunked_pipeline_model_parallel_splits
+            )
+            output_tensors = ChunkedPipelineParallelQueue(
+                config.chunked_pipeline_model_parallel_splits
+            )
+        else:
+            input_tensors = []
+            output_tensors = []
     forward_data_store = []
 
     # Run warmup forward passes.

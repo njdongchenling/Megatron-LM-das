@@ -26,6 +26,7 @@ from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.core.typed_torch import apply_module
 from megatron.core.utils import internal_api
 
+from hcu_megatron.core.cached_prefix_utils import CachedPrefixParams
 from hcu_megatron.training.arguments import get_adaptor_args
 
 
@@ -82,6 +83,9 @@ def moe_layer_init_wrapper(moe_layer_init_func):
                     pg_collection=pg_collection,
                 )
 
+        # chunked pp
+        self.cached_prefix_params = None
+
     return wrapper
 
 
@@ -92,7 +96,10 @@ def moe_layer_forward_wrapper(moe_layer_foward_func):
         hidden_states: torch.Tensor,
         intermediate_tensors=None,
         padding_mask: Optional[torch.Tensor] = None,
+        cached_prefix_params: Optional[CachedPrefixParams] = None,
     ):
+        self.cached_prefix_params = cached_prefix_params
+
         if self.training and self.attn_tp_group.size() > 1 and not self.config.sequence_parallel:
             raise ValueError(
                 "During training, performance may degrade if MoE and tensor parallelism"
@@ -153,6 +160,22 @@ class MoELayer():
     subset of experts. This implementation supports different token dispatching
     strategies such as All-to-All and All-Gather.
     """
+
+    @maybe_skip_or_early_return_by_cudagraph("route")
+    def route(
+        self,
+        hidden_states: torch.Tensor,
+        padding_mask: Optional[torch.Tensor] = None,
+    ):
+        """Compute token routing for preprocessing.
+
+        This method uses the router to determine which experts to send each token to,
+        producing routing probabilities and a mapping.
+        """
+        probs, routing_map = apply_module(self.router)(
+            hidden_states, padding_mask, cached_prefix_params=self.cached_prefix_params
+        )
+        return probs, routing_map
 
     def get_token_dispatcher(self, is_recompute=False,):
         if get_adaptor_args().integrate_recompute_to_ep_comm_overlap and is_recompute:

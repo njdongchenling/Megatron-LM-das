@@ -52,7 +52,7 @@ See [LICENSE](./LICENSE) and [NOTICE](./NOTICE) for details.
 
 This repository contains or references third-party source code and dependencies in
 addition to the upstream Megatron-LM baseline (for example, Megatron-Bridge,
-Megatron-Energon, MindSpeed, VocabularyParallelism, Seq1F1B, Primus, and NVIDIA
+Megatron-Energon, MindSpeed, VocabularyParallelism, Primus, and NVIDIA
 TransformerEngine). For a complete list of third-party components, their licenses,
 attribution, and applicable notices, please refer to the formal third-party notice
 file: [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md).

@@ -2,11 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 from typing import Optional, Tuple, Union
-from functools import wraps
 
-import torch
 from torch import Tensor
-from flash_attn.flash_attn_interface import _flash_attn_varlen_forward, _flash_attn_varlen_backward
 
 from megatron.core.inference.contexts import BaseInferenceContext
 from megatron.core.inference.utils import InferenceMode
@@ -15,7 +12,6 @@ from megatron.core.packed_seq_params import PackedSeqParams
 from megatron.core.pipeline_parallel.fine_grained_activation_offload import (
     FineGrainedActivationOffloadingInterface as off_interface,
 )
-from megatron.core.process_groups_config import ProcessGroupCollection
 from megatron.core.transformer.identity_op import IdentityOp
 from megatron.core.typed_torch import apply_module
 from megatron.core.utils import (
@@ -40,211 +36,9 @@ try:
 except ImportError:
     HAVE_FUSED_QKV_ROPE = False
 
+from hcu_megatron.core.cached_prefix_utils import CachedPrefixParams
+from hcu_megatron.core.transformer.attention_cached_prefix import ChunkedKVCacheForAttention
 from hcu_megatron.training.arguments import get_adaptor_args
-
-
-def attention_init_wrapper(attention_init_func):
-    @wraps(attention_init_func)
-    def wrapper(
-        self,
-        config,
-        submodules,
-        layer_number,
-        attn_mask_type,
-        attention_type,
-        cp_comm_type: str | None = None,
-        pg_collection: ProcessGroupCollection | None = None,
-        pp_layer_offset: Optional[int] = None,
-        name: str | None = None,
-    ):
-        attention_init_func(
-            self,
-            config=config,
-            submodules=submodules,
-            layer_number=layer_number,
-            attn_mask_type=attn_mask_type,
-            attention_type=attention_type,
-            cp_comm_type=cp_comm_type,
-            pg_collection=pg_collection,
-            pp_layer_offset=pp_layer_offset,
-            name=name,
-        )
-
-        if get_adaptor_args().pipe_sp_splits != 1:
-            self.core_attention_flash = FlashSeqSelfAttention(
-                causal=True, softmax_scale=self.config.softmax_scale, attention_dropout=self.config.attention_dropout
-            )
-
-    return wrapper
-
-
-def kv_sp_flash_func(q, k, v, kv_cache, softmax_scale, causal):
-    out = FlashAttnVarlenFunc.apply(q, k, v, kv_cache, 0.0, causal, softmax_scale)
-    return out
-
-
-class FlashAttnVarlenFunc(torch.autograd.Function):
-    @staticmethod
-    def forward(
-            ctx,
-            q,
-            k,
-            v,
-            kv_cache,
-            dropout_p,
-            causal,
-            softmax_scale,
-    ):
-        if softmax_scale is None:
-            softmax_scale = q.shape[-1] ** (-0.5)
-        batch_size = q.shape[0]
-        if 'k_cache' in kv_cache:
-            k_cache, v_cache = kv_cache['k_cache'], kv_cache['v_cache']
-            offset = k_cache.shape[1]
-            k_whole = torch.cat([k_cache, k], dim=1).contiguous()
-            v_whole = torch.cat([v_cache, v], dim=1).contiguous()
-        else:
-            offset = 0
-            k_whole = k
-            v_whole = v
-        kv_cache['k_cache'], kv_cache['v_cache'] = k_whole, v_whole
-        seqlen_k = k_whole.shape[1]
-        seqlen_q = q.shape[1]
-        ctx._seqlen_k = seqlen_k
-        ctx._seqlen_q = seqlen_q
-        ctx._offset = offset
-        q, k_whole, v_whole = [rearrange(x, 'b s ... -> (b s) ...').contiguous() for x in [q, k_whole, v_whole]]
-        cu_seqlens_q = torch.arange(0, (batch_size + 1) * seqlen_q, step=seqlen_q, dtype=torch.int32, device="cuda")
-        cu_seqlens_k = torch.arange(0, (batch_size + 1) * seqlen_k, step=seqlen_k, dtype=torch.int32, device="cuda")
-
-        q = q.contiguous()
-        k_whole = k_whole.contiguous()
-        v_whole = v_whole.contiguous()
-        out, q, k_whole, v_whole, out_padded, softmax_lse, S_dmask, rng_state = _flash_attn_varlen_forward(
-            q,
-            k_whole,
-            v_whole,
-            cu_seqlens_q,
-            cu_seqlens_k,
-            seqlen_q,
-            seqlen_k,
-            dropout_p,
-            softmax_scale,
-            block_table=None,
-            causal=causal,
-            window_size=(-1, -1),
-            alibi_slopes=None,
-            return_softmax=False,
-            softcap=0,
-        )
-        ctx._kv_cache = kv_cache
-        ctx.save_for_backward(
-            q, k, v, out_padded, softmax_lse, cu_seqlens_q, cu_seqlens_k, rng_state,
-
-        )
-        ctx.dropout_p = dropout_p
-        ctx.softmax_scale = softmax_scale
-        ctx.causal = causal
-        return out
-
-    @staticmethod
-    def backward(ctx, dout, *args):
-        q, k, v, out, softmax_lse, cu_seqlens_q, cu_seqlens_k, rng_state = ctx.saved_tensors
-        k_whole = ctx._kv_cache['k_cache']
-        v_whole = ctx._kv_cache['v_cache']
-        batch_size = q.size(0) // ctx._seqlen_q
-        pk = k_whole[:, :ctx._seqlen_k]
-        pv = v_whole[:, :ctx._seqlen_k].contiguous()
-        ctx._kv_cache['k_cache'], ctx._kv_cache['v_cache'] = pk[:, :-ctx._seqlen_q], pv[:, :-ctx._seqlen_q]
-        pk, pv = [rearrange(x, 'b s ... -> (b s) ...') for x in [pk, pv]]
-        pk = pk.contiguous()
-        pv = pv.contiguous()
-        q = q.contiguous()
-
-        last_idx = not 'k_grad' in ctx._kv_cache
-        dq, dk, dv = torch.empty_like(q), torch.empty_like(pk), torch.empty_like(pv)
-        _flash_attn_varlen_backward(
-            dout,
-            q,
-            pk,
-            pv,
-            out,
-            softmax_lse,
-            dq,
-            dk,
-            dv,
-            cu_seqlens_q,
-            cu_seqlens_k,
-            ctx._seqlen_q,
-            ctx._seqlen_k,
-            ctx.dropout_p,
-            ctx.softmax_scale,
-            ctx.causal,
-            window_size=(-1, -1),
-            alibi_slopes=None,
-            deterministic=False,
-            rng_state=rng_state,
-            softcap=0,
-        )
-        dq = dq[..., : dout.shape[-1]]  # We could have padded the head dimension
-        dk = dk[..., : dout.shape[-1]]
-        dv = dv[..., : dout.shape[-1]]
-        dq, dk, dv = [rearrange(x, '(b s) ... -> b s ...', b=batch_size) for x in [dq, dk, dv]]
-        dk = dk.contiguous()
-        dv = dv.contiguous()
-        dq = dq.contiguous()
-        if not last_idx:
-            k_grad_p, v_grad_p = ctx._kv_cache['k_grad'], ctx._kv_cache['v_grad']
-            dk += k_grad_p
-            dv += v_grad_p
-        ctx._kv_cache['k_grad'], ctx._kv_cache['v_grad'] = dk[:, :ctx._offset], dv[:, :ctx._offset]
-        dk = dk[:, ctx._offset:ctx._seqlen_k]
-        dv = dv[:, ctx._offset:ctx._seqlen_k]
-
-        return dq, dk, dv, None, None, None, None, None, None, None
-
-
-class FlashSeqSelfAttention(torch.nn.Module):
-    """Implement the scaled dot product attention with softmax.
-    Arguments
-    ---------
-        softmax_scale: The temperature to use for the softmax attention.
-                      (default: 1/sqrt(d_keys) where d_keys is computed at
-                      runtime)
-        attention_dropout: The dropout rate to apply to the attention
-                           (default: 0.0)
-    """
-    def __init__(self, causal=False, softmax_scale=None, attention_dropout=0.0,
-                 device=None, dtype=None):
-        super().__init__()
-
-        assert rearrange is not None, 'Please install einops first, e.g., with pip install einops'
-        self.causal = causal
-        self.softmax_scale = softmax_scale
-        self.dropout_p = attention_dropout
-        self.kv_cache = {}
-
-    def forward(self, q, k, v, micro_sp_idx):
-        """Implements the multihead softmax attention.
-        Arguments
-        ---------
-            q, k, v: The tensor containing the query, key, and value. (B, S, H, D)
-        """
-
-        assert all((i.dtype in [torch.float16, torch.bfloat16] for i in (q,k,v)))
-        assert all((i.is_cuda for i in (q,k,v)))
-        args = get_adaptor_args()
-        batch_size, seqlen_q = q.shape[0], q.shape[1]
-        seqlen_k = k.shape[1]
-        if torch.is_tensor(micro_sp_idx):
-            micro_sp_idx = micro_sp_idx.item()
-        # micro_batch_id = args.schedule_info['micro_seq_id'] // args.pipe_sp_splits
-        if args.pipe_sp_splits != 1:
-            if micro_sp_idx == 0:
-                self.kv_cache = {}
-            output = kv_sp_flash_func(q, k, v, self.kv_cache, self.softmax_scale, True)
-            output = rearrange(output, '(b s) ... -> b s ...', b=batch_size)
-            return output.contiguous()
 
 
 class Attention():
@@ -261,9 +55,9 @@ class Attention():
         attention_bias: Optional[Tensor] = None,
         packed_seq_params: Optional[PackedSeqParams] = None,
         sequence_len_offset: Optional[int] = None,
+        cached_prefix_params: Optional[CachedPrefixParams] = None,
         *,
         inference_params: Optional[BaseInferenceContext] = None,
-        micro_sp_idx=None,
     ) -> tuple[Tensor, Tensor]:
         """
         Perform a forward pass through the attention module.
@@ -284,6 +78,8 @@ class Attention():
             packed_seq_params (Optional[PackedSeqparams]): Parameters used for THD format.
             sequence_len_offset (Optional[int]): Sequence length offset used for
                 inference CUDA graphs.
+            cached_prefix_params (Optional[CachedPrefixParams]): Parameters used for
+                prefix caching.
 
         Return:
             (Tuple[Tensor, Tensor]) Attention output and bias.
@@ -338,6 +134,7 @@ class Attention():
                 self.config.fused_single_qkv_rope,
                 inference_context is None,
                 packed_seq_params is None,
+                cached_prefix_params is None,
                 (
                     rotary_pos_emb is not None
                     and rotary_pos_emb[0] is not None
@@ -455,18 +252,6 @@ class Attention():
         ):
             q_pos_emb, k_pos_emb = rotary_pos_emb
 
-            from hcu_megatron.core.pipeline_parallel.seq1f1b.sp_utils import get_splits
-            if args.pipe_sp_splits != 1:
-                if args.pipe_sp_strategy == "uniform_comp":
-                    splits = get_splits()
-                    start = sum(splits[:micro_sp_idx])
-                    end = sum(splits[:micro_sp_idx + 1])
-                elif args.pipe_sp_strategy == "average":
-                    start = (micro_sp_idx * q_pos_emb.size(0)) // args.pipe_sp_splits
-                    end = ((micro_sp_idx + 1) * q_pos_emb.size(0)) // args.pipe_sp_splits
-                q_pos_emb = q_pos_emb[start:end]
-                k_pos_emb = k_pos_emb[start:end]
-
             if packed_seq_params is not None and packed_seq_params.qkv_format == 'thd':
                 if packed_seq_params.cu_seqlens_q_padded is not None:
                     cu_seqlens_q = packed_seq_params.cu_seqlens_q_padded
@@ -529,6 +314,9 @@ class Attention():
             self.offload_core_attention and self.training, query, "core_attn"
         )
         if self.checkpoint_core_attention and self.training:
+            assert (
+                cached_prefix_params is None
+            ), "cached_prefix_params is not supported with core attention checkpointing."
             core_attn_out = self._checkpointed_attention_forward(
                 query,
                 key,
@@ -540,11 +328,26 @@ class Attention():
             )
         else:
             if inference_context is None or inference_context.is_static_batching():
-                if args.pipe_sp_splits != 1:
-                    q, k, v = [rearrange(x, 's b ... -> b s ...').contiguous()
-                               for x in (query, key, value)]
-                    core_attn_out = self.core_attention_flash(q, k, v, micro_sp_idx)
-                    core_attn_out = rearrange(core_attn_out, 'b s h d -> s b (h d)').contiguous()
+                if cached_prefix_params is not None:
+                    assert not self.offload_core_attention, (
+                        "Core attention offloading is not supported with prefix caching, "
+                        f"but got {self.config.offload_modules=}."
+                    )
+
+                    kv_cache = cached_prefix_params.kv_cache_pool.get_kv_cache(
+                        layer_idx=self.layer_number, kv_cache_cls=ChunkedKVCacheForAttention
+                    )
+                    core_attn_out = kv_cache.forward_attention_with_kv_cache(
+                        module=apply_module(self.core_attention),
+                        cached_prefix_params=cached_prefix_params,
+                        query=query,
+                        key=key,
+                        value=value,
+                        attention_mask=attention_mask,
+                        attn_mask_type=attn_mask_type,
+                        attention_bias=attention_bias,
+                        packed_seq_params=packed_seq_params,
+                    )
                 else:
                     # Static batching attention kernel.
                     with core_attn_manager as query:
@@ -575,7 +378,7 @@ class Attention():
                     kv_lengths,
                     block_table,
                     inference_context.is_decode_only(),
-                    softmax_offset=self._get_inference_softmax_offset()
+                    softmax_offset=self._get_inference_softmax_offset(),
                 )
                 core_attn_out = rearrange(core_attn_out, 's b h d -> s b (h d)')
 

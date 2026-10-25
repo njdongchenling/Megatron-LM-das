@@ -23,10 +23,6 @@ from hcu_megatron.core.pipeline_parallel.schedules import (
     forward_backward_pipelining_without_interleaving,
     forward_backward_pipelining_zbh1,
 )
-from hcu_megatron.core.pipeline_parallel.seq1f1b.schedules import (
-    seq1f1b_forward_backward_pipelining_without_interleaving,
-    seq1f1b_forward_backward_pipelining_with_interleaving
-)
 from hcu_megatron.core.pipeline_parallel.ripipe_schedules import forward_backward_ripipe_pipelining
 from hcu_megatron.megatron_adaptor import repatch
 from hcu_megatron.training.arguments import (
@@ -68,8 +64,6 @@ def create_test_args():
 @pytest.mark.parametrize(
     "schedule_method, forward_backward_func, should_assert_error",
     [("dualpipev", forward_backward_pipelining_with_cutinhalf, False),
-     ("seq1f1b", seq1f1b_forward_backward_pipelining_without_interleaving, False),
-     ("interleaved_seq1f1b", seq1f1b_forward_backward_pipelining_with_interleaving, False),
      ("ripipe", forward_backward_ripipe_pipelining, False),
      ("unsupport_schedule", forward_backward_pipelining_with_cutinhalf, True)]
 )
