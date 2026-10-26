@@ -1,19 +1,16 @@
 # Copyright (c) 2023, NVIDIA CORPORATION. All rights reserved.
 
-from typing import TYPE_CHECKING, Optional
-
-if TYPE_CHECKING:
-    from megatron.core.transformer.transformer_config import TransformerConfig
-    from megatron.core.transformer.transformer_block import TransformerBlock
-    from megatron.core.inference.contexts import BaseInferenceContext
-    from megatron.core.packed_seq_params import PackedSeqParams
-
+from typing import Optional
 from functools import lru_cache, wraps
 
 import torch
 from torch import Tensor
 
+from megatron.core.inference.contexts import BaseInferenceContext
 from megatron.core.models.common.embeddings.rope_utils import get_pos_emb_on_this_cp_rank
+from megatron.core.packed_seq_params import PackedSeqParams
+from megatron.core.transformer.transformer_block import TransformerBlock
+from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.core.utils import internal_api
 
 from hcu_megatron.core.cached_prefix_utils import CachedPrefixParams
@@ -49,7 +46,6 @@ def rotary_embedding_get_rotary_seq_len_wrapper(fn):
             transformer_input,
             transformer_config,
             packed_seq_params=packed_seq_params,
-            cached_prefix_params=cached_prefix_params,
             inference_params=inference_params,
         )
 

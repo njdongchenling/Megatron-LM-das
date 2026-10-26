@@ -158,7 +158,8 @@ def get_batch(data_iterator, vp_stage: Optional[int] = None, microbatch_id=None)
 
     if config.chunked_pipeline_model_parallel_splits > 1:
         # The inner data iterator is None, so we need to mock the next batch.
-        data_iterator.mock_next(args.seq_length)
+        if tp_rank != 0:
+            data_iterator.mock_next(args.seq_length)
         cached_prefix_params = data_iterator.get_current_cached_prefix_params()
         seq_length = cached_prefix_params.this_chunk_seqlen
     else:

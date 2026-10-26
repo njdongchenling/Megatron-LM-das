@@ -454,6 +454,11 @@ class PipelineFeature(AbstractFeature):
                                         backward_step_func)
 
         # chunked pp
+        from hcu_megatron.core.models.common.embeddings.rotary_pos_embedding import (
+            RotaryEmbedding,
+            rotary_embedding_get_rotary_seq_len_wrapper,
+        )
+        from hcu_megatron.core.models.common.embeddings.yarn_rotary_pos_embedding import YarnRotaryEmbedding
         from hcu_megatron.core.transformer.moe.router import (
             topK_router_apply_aux_loss_wrapper,
             topK_router_foward_wrapper,
@@ -466,3 +471,9 @@ class PipelineFeature(AbstractFeature):
                                     topK_router_foward_wrapper)
         patch_manager.register_patch('megatron.core.transformer.moe.router.TopKRouter.__init__',
                                     topK_router_init_wrapper)
+        patch_manager.register_patch('megatron.core.models.common.embeddings.rotary_pos_embedding.RotaryEmbedding.forward',
+                                    RotaryEmbedding.forward)
+        patch_manager.register_patch('megatron.core.models.common.embeddings.rotary_pos_embedding.RotaryEmbedding.get_rotary_seq_len',
+                                    rotary_embedding_get_rotary_seq_len_wrapper)
+        patch_manager.register_patch('megatron.core.models.common.embeddings.yarn_rotary_pos_embedding.YarnRotaryEmbedding.forward',
+                                    YarnRotaryEmbedding.forward)

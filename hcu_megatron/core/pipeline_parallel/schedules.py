@@ -10,10 +10,6 @@ from functools import partial
 from typing import Callable, Iterator, List, Optional, Union
 
 from megatron.core import parallel_state
-from megatron.core.pipeline_parallel.chunked_pipeline_parallel_utils import (
-    ChunkedPipelineParallelDataIterator,
-    ChunkedPipelineParallelQueue,
-)
 from megatron.core.pipeline_parallel.fine_grained_activation_offload import (
     FineGrainedActivationOffloadingInterface as off_interface,
 )
@@ -54,11 +50,13 @@ from megatron.core.utils import (
 )
 
 from .ripipe_schedules import forward_backward_ripipe_pipelining
+from hcu_megatron.core.parallel_state import get_dualpipe_chunk
+from hcu_megatron.core.pipeline_parallel.chunked_pipeline_parallel_utils import (
+    ChunkedPipelineParallelDataIterator,
+    ChunkedPipelineParallelQueue,
+)
 from hcu_megatron.core.pipeline_parallel.pp_data_collector import schedule_wrapper
 from hcu_megatron.core.pipeline_parallel.schedule_timers import ScheduleTimers
-
-
-from hcu_megatron.core.parallel_state import get_dualpipe_chunk
 from hcu_megatron.training.arguments import get_adaptor_args
 
 

@@ -1,7 +1,7 @@
 # Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 Hygon Information Technology Co., Ltd.
-from typing import TYPE_CHECKING, Any, Optional, Dict, Union
+from typing import Any, Optional, Dict, Union
 from functools import wraps
 from dataclasses import dataclass, field
 
@@ -11,6 +11,7 @@ from torch import Tensor
 
 from megatron.core.transformer.enums import CudaGraphScope, LayerType
 from megatron.core import parallel_state, tensor_parallel
+from megatron.core.inference.contexts import BaseInferenceContext
 from megatron.core.inference.utils import InferenceMode
 from megatron.core.packed_seq_params import PackedSeqParams
 from megatron.core.process_groups_config import ProcessGroupCollection
@@ -30,9 +31,6 @@ from megatron.core.utils import (
     nvtx_range_pop,
     nvtx_range_push,
 )
-
-if TYPE_CHECKING:
-    from megatron.core.inference.contexts import BaseInferenceContext
 
 from hcu_megatron.core.cached_prefix_utils import CachedPrefixParams
 from hcu_megatron.core.tensor_parallel.random import CheckpointManager
