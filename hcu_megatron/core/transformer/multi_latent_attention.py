@@ -16,6 +16,8 @@ from megatron.core.transformer.multi_latent_attention import (
 from megatron.core.typed_torch import apply_module
 from megatron.core.utils import deprecate_inference_params
 
+from hcu_megatron.core.transformer.attention_cached_prefix import ChunkedKVCacheForAttention
+
 
 def multi_latent_attention_forward_wrapper(func):
     @wraps(func)
@@ -37,7 +39,7 @@ def multi_latent_attention_forward_wrapper(func):
         *,
         inference_params=None,
     ):
-        assert cached_prefix_params is None, "Prefix caching is not supported for MLA."
+        self.cached_prefix_params = cached_prefix_params
 
         return func(
             self,
@@ -57,6 +59,73 @@ def multi_latent_attention_forward_wrapper(func):
         )
 
     return wrapper
+
+
+class MultiLatentAttention():
+    def _run_core_attention(
+        self,
+        query,
+        key,
+        value,
+        attention_mask,
+        packed_seq_params=None,
+        attn_mask_type=None,
+        **extra_kwargs,
+    ):
+        """Run MLA core attention with the THD value pad/trim workaround."""
+        value, need_v_pad, orig_v_dim, padded_v_dim = _prepare_mla_core_attention_value(
+            self, query, value, packed_seq_params
+        )
+        if attn_mask_type is None:
+            attn_mask_type = self.attn_mask_type
+
+        orig_v_head_dim = None
+        if (
+            need_v_pad
+            and value is not None
+            and hasattr(self.core_attention, 'hidden_size_per_attention_head_v')
+        ):
+            orig_v_head_dim = self.core_attention.hidden_size_per_attention_head_v
+            if value.shape[-1] == orig_v_head_dim:
+                orig_v_head_dim = None
+            else:
+                self.core_attention.hidden_size_per_attention_head_v = value.shape[-1]
+
+        try:
+            if self.cached_prefix_params is not None:
+                assert not self.offload_core_attention, (
+                    "Core attention offloading is not supported with prefix caching, "
+                    f"but got {self.config.offload_modules=}."
+                )
+
+                kv_cache = self.cached_prefix_params.kv_cache_pool.get_kv_cache(
+                    layer_idx=self.layer_number, kv_cache_cls=ChunkedKVCacheForAttention
+                )
+                core_attn_out = kv_cache.forward_attention_with_kv_cache(
+                    module=apply_module(self.core_attention),
+                    cached_prefix_params=self.cached_prefix_params,
+                    query=query,
+                    key=key,
+                    value=value,
+                    attention_mask=attention_mask,
+                    attn_mask_type=attn_mask_type,
+                    packed_seq_params=packed_seq_params,
+                )
+            else:
+                core_attn_out = self.core_attention(
+                    query,
+                    key,
+                    value,
+                    attention_mask,
+                    packed_seq_params=packed_seq_params,
+                    attn_mask_type=attn_mask_type,
+                    **extra_kwargs,
+                )
+        finally:
+            if orig_v_head_dim is not None:
+                self.core_attention.hidden_size_per_attention_head_v = orig_v_head_dim
+
+        return _trim_mla_core_attention_output(core_attn_out, need_v_pad, orig_v_dim, padded_v_dim)
 
 
 class MLASelfAttention():

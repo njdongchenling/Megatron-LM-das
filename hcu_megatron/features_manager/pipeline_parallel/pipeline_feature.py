@@ -464,6 +464,7 @@ class PipelineFeature(AbstractFeature):
             topK_router_foward_wrapper,
             topK_router_init_wrapper,
         )
+        from hcu_megatron.core.transformer.multi_latent_attention import MultiLatentAttention
 
         patch_manager.register_patch('megatron.core.transformer.moe.router.TopKRouter._apply_aux_loss',
                                     topK_router_apply_aux_loss_wrapper)
@@ -477,3 +478,5 @@ class PipelineFeature(AbstractFeature):
                                     rotary_embedding_get_rotary_seq_len_wrapper)
         patch_manager.register_patch('megatron.core.models.common.embeddings.yarn_rotary_pos_embedding.YarnRotaryEmbedding.forward',
                                     YarnRotaryEmbedding.forward)
+        patch_manager.register_patch('megatron.core.transformer.multi_latent_attention.MultiLatentAttention._run_core_attention',
+                                    MultiLatentAttention._run_core_attention)
