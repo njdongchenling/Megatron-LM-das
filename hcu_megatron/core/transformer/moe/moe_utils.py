@@ -14,6 +14,7 @@ class MoERouterScoreCache(KVCache):
         super().__init__(config)
         if config.moe_load_balancing_loss_mode_for_chunked_sequence == "all_gather":
             self.scores_cache = []
+            self.routing_map_cache = []
             self.grad_scores_cache = torch.tensor([], device=torch.cuda.current_device())
             self.prefix_no_grad = []
 
@@ -24,6 +25,8 @@ class MoERouterScoreCache(KVCache):
         probs: torch.Tensor,
         scores_for_aux_loss: torch.Tensor,
         routing_map_for_aux_loss: torch.Tensor,
+        seq_length: int,
+        bsz: int,
         with_padding_mask: bool = False,
     ):
         """Apply aux loss to the probs."""
@@ -44,16 +47,19 @@ class MoERouterScoreCache(KVCache):
             # Drop the prefixes that are not needed.
             self.prefix_no_grad = self.prefix_no_grad[:n_prefix]
             self.scores_cache = self.scores_cache[:n_prefix]
+            self.routing_map_cache = self.routing_map_cache[:n_prefix]
 
             self.prefix_no_grad.append(not torch.is_grad_enabled())
             probs = AuxLossFunctionAllGather.apply(
                 router,
                 self.scores_cache,
+                self.routing_map_cache,
                 self.grad_scores_cache,
                 cached_prefix_params.is_terminal,
                 probs,
                 scores_for_aux_loss,
                 routing_map_for_aux_loss,
+                bsz,
                 with_padding_mask,
             )
         elif self.config.moe_load_balancing_loss_mode_for_chunked_sequence == "reduce":
@@ -61,6 +67,14 @@ class MoERouterScoreCache(KVCache):
                 probs,
                 scores_for_aux_loss,
                 routing_map_for_aux_loss,
+                with_padding_mask=with_padding_mask,
+            )
+            probs = router._apply_seq_aux_loss(
+                probs,
+                scores_for_aux_loss,
+                routing_map_for_aux_loss,
+                seq_length,
+                bsz,
                 with_padding_mask=with_padding_mask,
             )
         else:
@@ -77,25 +91,46 @@ class AuxLossFunctionAllGather(torch.autograd.Function):
         ctx,
         router: Callable,
         scores_cache: List[torch.Tensor],
+        routing_map_cache: List[torch.Tensor],
         grad_scores_cache: List[torch.Tensor],
         is_terminal: bool,
         probs: torch.Tensor,
         scores_for_aux_loss: torch.Tensor,
         routing_map_for_aux_loss: torch.Tensor,
+        bsz: int,
         with_padding_mask: bool,
     ):
         # ctx.save_for_backward(scores_for_aux_loss, routing_map_for_aux_loss)
         scores_cache.append(scores_for_aux_loss)
+        routing_map_cache.append(routing_map_for_aux_loss)
         if is_terminal:
-            # Gather the scores along the token dimension
+            # Gather the scores and routing maps along the token dimension. Each chunk is
+            # flattened from [s_chunk, b], so the concatenation is the flattened [s_total, b].
+            num_chunks = len(scores_cache)
             scores_joined = torch.cat(scores_cache, dim=0).detach().requires_grad_()
+            routing_map_joined = torch.cat(routing_map_cache, dim=0)
+            seq_length_joined = routing_map_joined.shape[0] // bsz
 
+            # The loss of the whole sequence is attached only once (on the terminal chunk),
+            # while both the aux loss grad scale and the logging are averaged over
+            # num_microbatches * chunked_pipeline_model_parallel_splits. The losses are
+            # linear in the scores, so scale the scores by num_chunks to compensate.
             # Compute the aux loss
             with torch.autograd.set_grad_enabled(True):
+                scores_scaled = scores_joined * num_chunks
                 probs_out = router._apply_aux_loss(
                     probs,
-                    scores_joined,
-                    routing_map_for_aux_loss,
+                    scores_scaled,
+                    routing_map_joined,
+                    with_padding_mask=with_padding_mask,
+                )
+
+                probs_out = router._apply_seq_aux_loss(
+                    probs_out,
+                    scores_scaled,
+                    routing_map_joined,
+                    seq_length_joined,
+                    bsz,
                     with_padding_mask=with_padding_mask,
                 )
 
@@ -108,6 +143,7 @@ class AuxLossFunctionAllGather(torch.autograd.Function):
         # Save other context variables for backward
         ctx.is_terminal = is_terminal
         ctx.scores_cache = scores_cache
+        ctx.routing_map_cache = routing_map_cache
         ctx.grad_scores_cache = grad_scores_cache
 
         return probs
@@ -141,14 +177,17 @@ class AuxLossFunctionAllGather(torch.autograd.Function):
         )
         grad_scores_cache.data = grad_scores_prefix.data
         scores_cache.pop(-1)
+        ctx.routing_map_cache.pop(-1)
 
         return (
             None,  # router
             None,  # scores_cache
+            None,  # routing_map_cache
             None,  # grad_scores_cache
             None,  # is_terminal
             grad_probs,  # probs
             grad_scores_current,  # scores_for_aux_loss
             None,  # routing_map_for_aux_loss
+            None,  # bsz
             None,  # with_padding_mask
         )

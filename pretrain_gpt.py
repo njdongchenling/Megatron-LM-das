@@ -382,7 +382,8 @@ def forward_step(data_iterator, model: GPTModel, return_schedule_plan: bool = Fa
                 args.overlap_moe_expert_parallel_comm
             ), "overlap_moe_expert_parallel_comm must be enabled to return the schedule plan"
             schedule_plan = model.build_schedule_plan(
-                tokens, position_ids, attention_mask, labels=labels, loss_mask=loss_mask
+                tokens, position_ids, attention_mask, labels=labels, loss_mask=loss_mask,
+                cached_prefix_params=cached_prefix_params,
             )
             return schedule_plan, partial(loss_func, loss_mask, model=model)
         else:

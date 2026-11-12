@@ -395,6 +395,7 @@ class GPTModel:
         *,
         output_processor: Optional[Callable[..., Tensor]] = None,
         output_processor_context: Optional[Any] = None,
+        cached_prefix_params: Optional[CachedPrefixParams] = None,
     ):
         """Builds a computation schedule plan for the model.
 
@@ -451,6 +452,7 @@ class GPTModel:
             padding_mask,
             output_processor=output_processor,
             output_processor_context=output_processor_context,
+            cached_prefix_params=cached_prefix_params,
         )
 
     def backward_dw(self):

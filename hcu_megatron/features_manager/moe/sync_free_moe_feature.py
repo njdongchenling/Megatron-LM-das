@@ -120,10 +120,10 @@ class SyncFreeMoeFeature(AbstractFeature):
         args = self.validate_args(args)
         if args.sync_free_moe:
             if args.use_turbo_topk_router:
-                from hcu_megatron.core.transformer.moe.router import PrimusTopKRouter
+                from hcu_megatron.core.transformer.moe.router import TopKRouter
 
                 patch_manager.register_patch("megatron.core.transformer.moe.router.TopKRouter.routing",
-                                             PrimusTopKRouter.routing)
+                                             TopKRouter.routing)
 
             if args.use_turbo_moe_permute_fusion:
                 from hcu_megatron.core.extensions.transformer_engine import (

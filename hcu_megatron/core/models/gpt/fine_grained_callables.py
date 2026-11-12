@@ -110,9 +110,12 @@ def build_transformer_layer_callables(layer: TransformerLayer):
                     rotary_pos_sin=rotary_pos_sin,
                     packed_seq_params=packed_seq_params,
                     sequence_len_offset=sequence_len_offset,
+                    cached_prefix_params=cached_prefix_params,
                 )
                 if not isinstance(layer.mlp, MoELayer):
                     return hidden_states, None, None, None
+
+                layer.mlp.cached_prefix_params = cached_prefix_params
                 mlp_norm_manager = off_interface(layer.offload_mlp_norm, hidden_states, "mlp_norm")
                 node.layer_state.mlp_norm_manager = mlp_norm_manager
                 if layer.recompute_pre_mlp_layernorm:
@@ -141,7 +144,7 @@ def build_transformer_layer_callables(layer: TransformerLayer):
 
                 shared_expert_output = layer.mlp.shared_experts_compute(pre_mlp_layernorm_output)
                 probs, routing_map = layer.mlp.route(
-                    pre_mlp_layernorm_output, cached_prefix_params=cached_prefix_params
+                    pre_mlp_layernorm_output
                 )
                 local_tokens, probs = layer.mlp.preprocess(
                     pre_mlp_layernorm_output, probs, routing_map, is_recompute=is_recompute
@@ -156,6 +159,7 @@ def build_transformer_layer_callables(layer: TransformerLayer):
             rotary_pos_sin=node.chunk_state.rotary_pos_sin,
             packed_seq_params=node.chunk_state.packed_seq_params,
             sequence_len_offset=node.chunk_state.sequence_len_offset,
+            cached_prefix_params=node.chunk_state.cached_prefix_params,
         )
         if not isinstance(layer.mlp, MoELayer):
             return hidden_states

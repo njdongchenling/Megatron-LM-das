@@ -51,9 +51,10 @@ class PipelineFeature(AbstractFeature):
         group = parser.add_argument_group(title=self.feature_name)
         group.add_argument('--schedule-method', type=str,
                            default='vanilla',
-                           choices=['vanilla', 'dualpipev', 'ripipe', 'zb_h1'],
+                           choices=['vanilla', 'dualpipev', 'ripipe', 'zb_h1', 'slimpipe'],
                            help='vanilla: use pipeline provided by megatron. '
-                           'zb_h1: use ZB-H1 schedule.')
+                                'zb_h1: use ZB-H1 schedule. '
+                                'slimpipe: use slimpipe.')
         # MoE communication overlap arguments
         group.add_argument('--overlap-ep-comm-with-split-attn', action="store_true",
                            default=False,
@@ -186,8 +187,8 @@ class PipelineFeature(AbstractFeature):
         if args.overlap_moe_expert_parallel_comm:
             assert args.transformer_impl == "transformer_engine", \
                 "moe a2a overlap is only supported with transformer_engine implementation"
-            assert args.schedule_method == "dualpipev" or args.virtual_pipeline_model_parallel_size is not None, \
-                'moe a2a overlap is only supported with vpp or dualpipev'
+            assert args.schedule_method in {"dualpipev", "slimpipe"} or args.virtual_pipeline_model_parallel_size is not None, \
+                'moe a2a overlap is only supported with vpp, dualpipev or slimpipe'
 
         # Vocabulary parallelism.
         if args.enable_vocab_parallel:
@@ -221,6 +222,13 @@ class PipelineFeature(AbstractFeature):
             if not args.delay_wgrad_compute:
                 warnings.warn(f"set delay_wgrad_compute to True when using zb1p schedule")
                 args.delay_wgrad_compute = True
+
+        if args.chunked_pipeline_model_parallel_splits > 1:
+            if isinstance(args.moe_router_load_balancing_type, str):
+                assert self.moe_router_load_balancing_type != "global_aux_loss", "chunked pp is currently not supported for global_aux_loss"
+
+            elif isinstance(args.moe_router_load_balancing_type, list):
+                assert "global_aux_loss" not in self.moe_router_load_balancing_type, "chunked pp is currently not supported for global_aux_loss"
 
         return args
 
@@ -460,14 +468,17 @@ class PipelineFeature(AbstractFeature):
         )
         from hcu_megatron.core.models.common.embeddings.yarn_rotary_pos_embedding import YarnRotaryEmbedding
         from hcu_megatron.core.transformer.moe.router import (
-            topK_router_apply_aux_loss_wrapper,
+            TopKRouter,
             topK_router_foward_wrapper,
             topK_router_init_wrapper,
         )
-        from hcu_megatron.core.transformer.multi_latent_attention import MultiLatentAttention
+        from hcu_megatron.core.transformer.multi_latent_attention import (
+            MultiLatentAttention,
+            mla_get_query_key_value_tensors_wrapper,
+        )
 
-        patch_manager.register_patch('megatron.core.transformer.moe.router.TopKRouter._apply_aux_loss',
-                                    topK_router_apply_aux_loss_wrapper)
+        patch_manager.register_patch('megatron.core.transformer.moe.router.TopKRouter.routing',
+                                    TopKRouter.routing)
         patch_manager.register_patch('megatron.core.transformer.moe.router.TopKRouter.forward',
                                     topK_router_foward_wrapper)
         patch_manager.register_patch('megatron.core.transformer.moe.router.TopKRouter.__init__',
@@ -480,3 +491,5 @@ class PipelineFeature(AbstractFeature):
                                     YarnRotaryEmbedding.forward)
         patch_manager.register_patch('megatron.core.transformer.multi_latent_attention.MultiLatentAttention._run_core_attention',
                                     MultiLatentAttention._run_core_attention)
+        patch_manager.register_patch('megatron.core.transformer.multi_latent_attention.MLASelfAttention.get_query_key_value_tensors',
+                                    mla_get_query_key_value_tensors_wrapper)

@@ -2,7 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 
+from typing import Any, Callable, Optional
+
 import torch
+from torch import Tensor
 
 from megatron.core.models.common.model_chunk_schedule_plan import TransformerLayerSchedulePlan as MegatronTransformerLayerSchedulePlan
 from megatron.core.models.common.model_chunk_schedule_plan import TransformerModelChunkSchedulePlan as MegatronTransformerModelChunkSchedulePlan
@@ -12,6 +15,7 @@ from megatron.core.pipeline_parallel.utils import (
 )
 from megatron.core.utils import nvtx_range_pop, nvtx_range_push
 
+from hcu_megatron.core.cached_prefix_utils import CachedPrefixParams
 from hcu_megatron.training.arguments import get_adaptor_args
 
 
@@ -408,6 +412,41 @@ class TransformerModelChunkSchedulePlan(MegatronTransformerModelChunkSchedulePla
     └── post_process: PostProcessNode
     """
 
+    def __init__(
+        self,
+        model,
+        input_ids: Tensor,
+        position_ids: Tensor,
+        attention_mask: Tensor,
+        decoder_input: Tensor = None,
+        labels: Tensor = None,
+        packed_seq_params=None,
+        extra_block_kwargs=None,
+        runtime_gather_output: Optional[bool] = None,
+        loss_mask: Optional[Tensor] = None,
+        padding_mask=None,
+        *,
+        output_processor: Optional[Callable[..., Tensor]] = None,
+        output_processor_context: Optional[Any] = None,
+        cached_prefix_params: Optional[CachedPrefixParams] = None,
+    ):
+        self.cached_prefix_params = cached_prefix_params
+        super().__init__(
+            model,
+            input_ids,
+            position_ids,
+            attention_mask,
+            decoder_input=decoder_input,
+            labels=labels,
+            packed_seq_params=packed_seq_params,
+            extra_block_kwargs=extra_block_kwargs,
+            runtime_gather_output=runtime_gather_output,
+            loss_mask=loss_mask,
+            padding_mask=padding_mask,
+            output_processor=output_processor,
+            output_processor_context=output_processor_context,
+        )
+
     def _build_layer_schedule_plan(self, module, comp_stream, comm_stream):
         if module is None:
             return
@@ -571,6 +610,13 @@ class TransformerModelChunkSchedulePlan(MegatronTransformerModelChunkSchedulePla
             return f_input, chunk_backward_dw
 
         return f_input, None
+
+    @property
+    def state(self):
+        """Gets the model chunk state."""
+        if getattr(self._model_chunk_state, "cached_prefix_params", None) is None:
+            self._model_chunk_state.cached_prefix_params = self.cached_prefix_params
+        return self._model_chunk_state
 
     @staticmethod
     def run_recompute_with_overlap_three_layers(

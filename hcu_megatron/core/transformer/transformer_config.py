@@ -135,7 +135,7 @@ def transformer_config_post_init_wrapper(post_init_func):
 
         # set delay_wgrad_compute to avoid AssertionError(overlap_moe_expert_parallel_comm must be enabled when enabling delay_wgrad_compute)
         # set overlap_moe_expert_parallel_comm to avoid AssertionError
-        need_delay_wgrad_compute_schedules = {"dualpipev", "zb_h1"}
+        need_delay_wgrad_compute_schedules = {"dualpipev", "zb_h1", "slimpipe"}
         if (
             self.schedule_method in need_delay_wgrad_compute_schedules
             or (self.schedule_method == "vanilla" and self.delay_1f1b_cooldown_wgrad_compute)
@@ -201,6 +201,16 @@ def transformer_config_post_init_wrapper(post_init_func):
         ):
             self.delay_wgrad_compute = origin_delay_wgrad_compute
             self.overlap_moe_expert_parallel_comm = origin_overlap_moe_expert_parallel_comm
+
+            # The bypass above also skips upstream's non-VPP a2a overlap checks; re-apply them.
+            if self.overlap_moe_expert_parallel_comm:
+                assert (
+                    self.expert_model_parallel_size > 1
+                ), 'overlap_moe_expert_parallel_comm is only supported with expert model parallelism'
+                assert self.moe_token_dispatcher_type in ['alltoall', 'flex'], (
+                    'overlap_moe_expert_parallel_comm is supported with alltoall/flex token '
+                    f'dispatcher, got {self.moe_token_dispatcher_type}'
+                )
 
         # Validation for "mhc" in recompute_modules
         if self.recompute_granularity == "selective" and "mhc" in self.recompute_modules:
@@ -291,9 +301,6 @@ def transformer_config_post_init_wrapper(post_init_func):
             self.variable_seq_lengths = True
 
         if self.chunked_pipeline_model_parallel_splits > 1:
-            assert (
-                not self.overlap_moe_expert_parallel_comm
-            ), f"Chunked PP does not support A2A overlap for now."
             if self.virtual_pipeline_model_parallel_size is not None:
                 assert (
                     self.pipeline_model_parallel_size >= self.chunked_pipeline_model_parallel_splits
